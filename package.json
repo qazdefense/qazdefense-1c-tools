@@ -1,0 +1,99 @@
+{
+  "name": "1c-tools",
+  "displayName": "1С QazDefense Tools",
+  "description": "Базы 1С (с добавлением/редактированием), задачи запуска/деплоя, дерево метаданных (как в Конфигураторе) с заимствованными объектами, ER-диаграммы связей, визуализация форм и заимствование объектов в расширение — из боковой панели",
+  "version": "0.17.0",
+  "publisher": "qazdefense",
+  "author": "QazDefense",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/QazDefense/qazdefense-1c-tools.git"
+  },
+  "bugs": {
+    "url": "https://github.com/QazDefense/qazdefense-1c-tools/issues"
+  },
+  "keywords": ["1C", "1С", "1С:Предприятие", "1C:Enterprise", "BSL", "Конфигуратор"],
+  "icon": "icon-brand.png",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "oneCLauncher",
+          "title": "1С",
+          "icon": "icon-brand.png"
+        },
+        {
+          "id": "oneCLauncherProject",
+          "title": "1С: проект",
+          "icon": "icon-project.svg"
+        }
+      ]
+    },
+    "views": {
+      "oneCLauncher": [
+        {
+          "id": "oneCLauncherBases",
+          "name": "Базы"
+        }
+      ],
+      "oneCLauncherProject": [
+        {
+          "id": "oneCLauncherView",
+          "name": "Задачи"
+        },
+        {
+          "id": "oneCLauncherMetadata",
+          "name": "Метаданные"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "oneCLauncher.switchBase", "title": "1С: Сменить базу" },
+      { "command": "oneCLauncher.editBaseProfile", "title": "1С: Настройки базы", "icon": "$(gear)" },
+      { "command": "oneCLauncher.addBaseProfile", "title": "1С: Добавить базу", "icon": "$(add)" },
+      { "command": "oneCLauncher.refreshBases", "title": "1С: Обновить список баз", "icon": "$(refresh)" },
+      { "command": "oneCLauncher.refreshMetadata", "title": "1С: Обновить метаданные", "icon": "$(refresh)" },
+      { "command": "oneCLauncher.showErDiagram", "title": "1С: ER-диаграмма объекта", "icon": "$(type-hierarchy)" },
+      { "command": "oneCLauncher.visualizeForm", "title": "1С: Визуализация формы", "icon": "$(layout)" },
+      { "command": "oneCLauncher.showPredefined", "title": "1С: Предопределённые элементы", "icon": "$(list-tree)" },
+      { "command": "oneCLauncher.previewTemplate", "title": "1С: Просмотр макета", "icon": "$(table)" },
+      { "command": "oneCLauncher.toggleSubsystemFilter", "title": "1С: Фильтр по подсистеме (вкл/выкл)", "icon": "$(filter)" },
+      { "command": "oneCLauncher.clearSubsystemFilter", "title": "1С: Снять фильтр по подсистеме", "icon": "$(filter-filled)" },
+      { "command": "oneCLauncher.borrowObject", "title": "1С: Заимствовать в расширение", "icon": "$(link)" },
+      { "command": "oneCLauncher.copyObjectPath", "title": "1С: Копировать путь объекта" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "oneCLauncher.addBaseProfile", "when": "view == oneCLauncherBases", "group": "navigation" },
+        { "command": "oneCLauncher.refreshBases", "when": "view == oneCLauncherBases", "group": "navigation" },
+        { "command": "oneCLauncher.clearSubsystemFilter", "when": "view == oneCLauncherMetadata && oneCLauncherSubsystemFilterActive", "group": "navigation" },
+        { "command": "oneCLauncher.refreshMetadata", "when": "view == oneCLauncherMetadata", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "oneCLauncher.editBaseProfile", "when": "view == oneCLauncherBases && viewItem == base-profile", "group": "inline" },
+        { "command": "oneCLauncher.showErDiagram", "when": "view == oneCLauncherMetadata && viewItem =~ /^metadata-object/", "group": "1c@1" },
+        { "command": "oneCLauncher.visualizeForm", "when": "view == oneCLauncherMetadata && viewItem =~ /^metadata-object/", "group": "1c@2" },
+        { "command": "oneCLauncher.visualizeForm", "when": "view == oneCLauncherMetadata && viewItem == metadata-form-file", "group": "1c@1" },
+        { "command": "oneCLauncher.visualizeForm", "when": "view == oneCLauncherMetadata && viewItem == metadata-form-file", "group": "inline" },
+        { "command": "oneCLauncher.visualizeForm", "when": "view == oneCLauncherMetadata && viewItem == metadata-formdir", "group": "1c@1" },
+        { "command": "oneCLauncher.visualizeForm", "when": "view == oneCLauncherMetadata && viewItem == metadata-formdir", "group": "inline" },
+        { "command": "oneCLauncher.previewTemplate", "when": "view == oneCLauncherMetadata && viewItem =~ /^metadata-object/", "group": "1c@3" },
+        { "command": "oneCLauncher.previewTemplate", "when": "view == oneCLauncherMetadata && viewItem == metadata-template-file", "group": "1c@1" },
+        { "command": "oneCLauncher.previewTemplate", "when": "view == oneCLauncherMetadata && viewItem == metadata-template-file", "group": "inline" },
+        { "command": "oneCLauncher.previewTemplate", "when": "view == oneCLauncherMetadata && viewItem == metadata-templatedir", "group": "1c@1" },
+        { "command": "oneCLauncher.previewTemplate", "when": "view == oneCLauncherMetadata && viewItem == metadata-templatedir", "group": "inline" },
+        { "command": "oneCLauncher.showPredefined", "when": "view == oneCLauncherMetadata && viewItem =~ /-predefinable$/", "group": "1c@4" },
+        { "command": "oneCLauncher.toggleSubsystemFilter", "when": "view == oneCLauncherMetadata && viewItem =~ /-subsystem$/", "group": "1c@5" },
+        { "command": "oneCLauncher.borrowObject", "when": "view == oneCLauncherMetadata && viewItem =~ /^metadata-object-own-root/", "group": "1c@6" },
+        { "command": "oneCLauncher.copyObjectPath", "when": "view == oneCLauncherMetadata && viewItem =~ /^metadata-object/", "group": "1c@7" }
+      ]
+    }
+  }
+}
