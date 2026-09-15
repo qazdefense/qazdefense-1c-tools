@@ -45,7 +45,7 @@
   - Кэш на категорию — второе и последующие раскрытия того же узла не лезут
     на диск заново; сбрасывается кнопкой «Обновить» или сменой базы.
 
-  ![Дерево метаданных](resources/screenshots/metadata-tree.png)
+  <p align="center"><img src="resources/screenshots/metadata-tree.png" alt="Дерево метаданных" width="420"></p>
 
   Правый клик на объекте:
   - **ER-диаграмма объекта** — вкладка с Mermaid-графом: сам объект и его
@@ -54,12 +54,12 @@
   - **Визуализация формы** (на `Form.xml` или папке формы) — структура
     полей/групп/таблиц формы.
 
-    ![Визуализация формы](resources/screenshots/form-visualization.png)
+    <p align="center"><img src="resources/screenshots/form-visualization.png" alt="Визуализация формы" width="700"></p>
 
   - **Просмотр макета** (на файле макета или его папке) — предпросмотр
     табличного документа без открытия Конфигуратора.
 
-    ![Просмотр макета](resources/screenshots/template-preview.png)
+    <p align="center"><img src="resources/screenshots/template-preview.png" alt="Просмотр макета" width="700"></p>
   - **Предопределённые элементы** — список предопределённых элементов
     объекта (справочники, планы видов характеристик, перечисления и т.п.
     — там, где они вообще бывают).
