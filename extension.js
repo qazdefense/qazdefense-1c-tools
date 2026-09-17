@@ -9,11 +9,11 @@ const crypto = require('crypto');
 // ============================================================================
 
 const TASKS = [
-	{ label: 'Запустить Предприятие', task: '1С: Запустить Предприятие', icon: 'play' },
-	{ label: 'Открыть Конфигуратор', task: '1С: Открыть Конфигуратор', icon: 'tools' },
-	{ label: 'Загрузить изменённые объекты', task: '1С: Загрузить изменённые объекты', icon: 'cloud-upload' },
-	{ label: 'Загрузить + обновить БД', task: '1С: Загрузить изменённые объекты + обновить БД', icon: 'sync' },
-	{ label: 'Обновить конфигурацию БД', task: '1С: Обновить конфигурацию БД', icon: 'database' },
+	{ label: 'Запустить Предприятие', task: '1С: Запустить Предприятие', icon: 'play', script: 'open-enterprise.ps1', args: [] },
+	{ label: 'Открыть Конфигуратор', task: '1С: Открыть Конфигуратор', icon: 'tools', script: 'open-designer.ps1', args: [] },
+	{ label: 'Загрузить изменённые объекты', task: '1С: Загрузить изменённые объекты', icon: 'cloud-upload', script: 'deploy-to-ib.ps1', args: [] },
+	{ label: 'Загрузить + обновить БД', task: '1С: Загрузить изменённые объекты + обновить БД', icon: 'sync', script: 'deploy-to-ib.ps1', args: ['-UpdateDb'] },
+	{ label: 'Обновить конфигурацию БД', task: '1С: Обновить конфигурацию БД', icon: 'database', script: 'update-db.ps1', args: [] },
 ];
 
 // Состояние строки по имени задачи: 'running' | 'success' | 'error' | не задано (idle).
@@ -94,9 +94,16 @@ async function runTaskWithFeedback(entry) {
 	const tasks = await vscode.tasks.fetchTasks();
 	const target = tasks.find((t) => t.name === entry.task);
 	if (!target) {
-		setTaskState(entry, 'error');
-		vscode.window.showErrorMessage(`Задача "${entry.task}" не найдена в текущем воркспейсе (.vscode/tasks.json).`);
-		setTimeout(() => setTaskState(entry, undefined), 4000);
+		// Раньше без .vscode/tasks.json с ровно такими именами задач клик
+		// по строке в дереве просто падал с ошибкой "задача не найдена" —
+		// расширение требовало от пользователя вручную завести tasks.json
+		// под магические строки (сравнение с whiterabbit.1c-dev-tools:
+		// у них аналогичные команды запуска работают без внешнего
+		// tasks.json вообще). Фолбэк ниже запускает тот же .1С/*.ps1
+		// скрипт напрямую через runPowerShell — tasks.json остаётся
+		// опциональным удобством (свой цвет/иконка в стандартной панели
+		// "Задачи"), а не обязательным условием для работы кнопки.
+		await runScriptWithFeedback(entry);
 		return;
 	}
 
@@ -121,6 +128,39 @@ async function runTaskWithFeedback(entry) {
 				vscode.tasks.executeTask(target);
 			})
 	);
+}
+
+// Фолбэк-путь runTaskWithFeedback, когда в воркспейсе нет .vscode/tasks.json
+// с нужной задачей: тот же .1С/<script>.ps1 напрямую через runPowerShell,
+// та же обратная связь (строка дерева/статус-бар/прогресс), что и у пути
+// через vscode.tasks.
+async function runScriptWithFeedback(entry) {
+	const root = getWorkspaceRoot();
+	if (!root) {
+		setTaskState(entry, 'error');
+		vscode.window.showErrorMessage('Нет открытого воркспейса.');
+		setTimeout(() => setTaskState(entry, undefined), 4000);
+		return;
+	}
+	const scriptPath = path.join(root, '.1С', entry.script);
+	if (!fs.existsSync(scriptPath)) {
+		setTaskState(entry, 'error');
+		vscode.window.showErrorMessage(`Скрипт не найден: .1С/${entry.script}`);
+		setTimeout(() => setTaskState(entry, undefined), 4000);
+		return;
+	}
+	try {
+		await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: entry.label, cancellable: false },
+			() => runPowerShell(scriptPath, entry.args, root)
+		);
+		setTaskState(entry, 'success');
+		vscode.window.setStatusBarMessage(`$(check) ${entry.label} — готово`, 5000);
+	} catch (e) {
+		setTaskState(entry, 'error');
+		vscode.window.showErrorMessage(`${entry.label}: ${e.message}`);
+	}
+	setTimeout(() => setTaskState(entry, undefined), 4000);
 }
 
 // ============================================================================
