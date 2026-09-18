@@ -1,7 +1,8 @@
 # 1С QazDefense Tools
 
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-007ACC)](https://marketplace.visualstudio.com/items?itemName=qazdefense.1c-tools)
-[![Лицензия](https://img.shields.io/badge/license-custom-blue)](LICENSE.md)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=qazdefense.1c-tools)
+[![GitHub](https://img.shields.io/badge/GitHub-qazdefense--1c--tools-181717?logo=github&logoColor=white)](https://github.com/qazdefense/qazdefense-1c-tools)
+[![Лицензия](https://img.shields.io/badge/license-custom-2E7D32)](LICENSE.md)
 
 Расширение VS Code для повседневной работы с несколькими базами 1С в одном
 репозитории: запуск, переключение базы, дерево метаданных (конфигурация +
