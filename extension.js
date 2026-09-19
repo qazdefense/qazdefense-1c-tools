@@ -2041,20 +2041,41 @@ function baseFolderPath(connect) {
 	return file ? file[1] : undefined;
 }
 
+// Параметры запуска из строки соединения v8i. Через /IBConnectionString
+// передавать нельзя: значение само содержит кавычки (File="D:\...";), и при
+// запуске процесса Windows экранирует их так, что платформа видит путь как
+// мусор и предлагает "Информационная база не обнаружена! Создать новую?"
+// (живой случай). /F и /S принимают путь и "сервер\база" обычными
+// аргументами — кавычки ставит сам запуск процесса, ничего не ломается.
+function launchArgs(mode, base) {
+	const file = base.connect.match(/File\s*=\s*"?([^";]+)"?/i);
+	if (file) return [mode, '/F', file[1]];
+	const srvr = base.connect.match(/Srvr\s*=\s*"?([^";]+)"?/i);
+	const ref = base.connect.match(/Ref\s*=\s*"?([^";]+)"?/i);
+	if (srvr && ref) return [mode, '/S', `${srvr[1]}\\${ref[1]}`];
+	const ws = base.connect.match(/ws\s*=\s*"?([^";]+)"?/i);
+	if (ws) return [mode, '/WS', ws[1]];
+	return [mode, '/IBConnectionString', base.connect.replace(/;+$/, '') + ';'];
+}
+
 // Запуск отвязан от VS Code: клиент 1С живёт своей жизнью (его закрывает
 // пользователь, а не редактор), поэтому detached + unref, без ожидания кода
 // возврата. Ошибку показываем только если процесс не стартовал вообще.
-function launch1C(mode, base) {
-	const exe = resolvePlatformExe(base.version);
+function launch1C(mode, base, forcedExe) {
+	const exe = forcedExe || resolvePlatformExe(base.version);
 	if (!exe) {
 		vscode.window.showErrorMessage(
 			'Не найден 1cv8.exe. Укажите путь в настройке «qazdefense1c.platformPath» (1С: Настройка расширения).'
 		);
 		return false;
 	}
-	const args = [mode, '/IBConnectionString', base.connect.replace(/;+$/, '') + ';'];
+	const file = base.connect.match(/File\s*=\s*"?([^";]+)"?/i);
+	if (file && !fs.existsSync(file[1])) {
+		vscode.window.showErrorMessage(`Каталог базы не найден: ${file[1]}`);
+		return false;
+	}
 	try {
-		const child = cp.spawn(exe, args, { detached: true, stdio: 'ignore' });
+		const child = cp.spawn(exe, launchArgs(mode, base), { detached: true, stdio: 'ignore' });
 		child.on('error', (e) => vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`));
 		child.unref();
 	} catch (e) {
@@ -2211,11 +2232,8 @@ function openBasePanelCommand(item) {
 	panel.onDidDispose(() => { if (basePanelWebview === panel) basePanelWebview = undefined; });
 	panel.webview.html = basePanelHtml(base, resolvePlatformExe(base.version), platforms, inProject);
 	panel.webview.onDidReceiveMessage(async (msg) => {
-		const target = msg.platform ? { ...base, forcedExe: msg.platform } : base;
 		if (msg.action === 'enterprise' || msg.action === 'designer') {
-			const mode = msg.action === 'designer' ? 'DESIGNER' : 'ENTERPRISE';
-			if (target.forcedExe) launchWithExe(target.forcedExe, mode, target);
-			else launch1C(mode, target);
+			launch1C(msg.action === 'designer' ? 'DESIGNER' : 'ENTERPRISE', base, msg.platform || undefined);
 			return;
 		}
 		if (msg.action === 'reveal') {
@@ -2233,17 +2251,6 @@ function openBasePanelCommand(item) {
 			createProfileFromSystemBase(base);
 		}
 	});
-}
-
-function launchWithExe(exe, mode, base) {
-	try {
-		const child = cp.spawn(exe, [mode, '/IBConnectionString', base.connect.replace(/;+$/, '') + ';'],
-			{ detached: true, stdio: 'ignore' });
-		child.on('error', (e) => vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`));
-		child.unref();
-	} catch (e) {
-		vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`);
-	}
 }
 
 // Мост между двумя мирами: база из списка 1С → профиль проекта, чтобы к ней
