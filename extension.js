@@ -559,7 +559,7 @@ function addBaseProfileCommand() {
 		if (fs.existsSync(filePath)) return `Профиль "${name}" уже есть.`;
 		fs.mkdirSync(path.dirname(filePath), { recursive: true });
 		fs.writeFileSync(filePath, '﻿' + buildPsd1(values), 'utf8');
-		vscode.window.showInformationMessage(`База "${name}" добавлена. Кликните по ней в "Базы 1С", чтобы сделать активной.`);
+		vscode.window.showInformationMessage(`База "${name}" добавлена. Кликните по ней в «Базы проекта», чтобы сделать активной.`);
 		if (basesTreeProvider) basesTreeProvider.refresh();
 		return undefined;
 	});
@@ -1912,6 +1912,569 @@ async function borrowObjectCommand(item) {
 }
 
 // ============================================================================
+// Часть 6: платформа 1С, базы из списка 1С и панель запуска (без проекта)
+// ============================================================================
+
+// Всё, что выше, работает только внутри воркспейса с .1С/*.ps1 — то есть
+// внутри ЭТОГО проекта. Отсюда и ниже — база берётся из обычного списка
+// 1С:Предприятия (ibases.v8i, тот же, что видит стартер), запуск идёт прямо
+// через 1cv8.exe, и ни воркспейс, ни скрипты не нужны: открыл VS Code —
+// запустил любую свою базу.
+
+function extConfig() {
+	return vscode.workspace.getConfiguration('qazdefense1c');
+}
+
+// Список установленных платформ: C:\Program Files\1cv8\<версия>\bin\1cv8.exe,
+// отсортированный от новой к старой. Учитываются оба Program Files: 32-битная
+// платформа на 64-битной Windows ставится в (x86), и это нормальный случай.
+function installedPlatforms() {
+	const roots = new Set();
+	for (const env of ['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)']) {
+		const value = process.env[env];
+		if (value) roots.add(path.join(value, '1cv8'));
+	}
+	const found = [];
+	for (const root of roots) {
+		let entries = [];
+		try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { continue; }
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !/^\d+\.\d+\.\d+\.\d+$/.test(entry.name)) continue;
+			const exe = path.join(root, entry.name, 'bin', '1cv8.exe');
+			if (fs.existsSync(exe)) found.push({ version: entry.name, exe });
+		}
+	}
+	const weight = (v) => v.split('.').map((p) => Number(p).toString().padStart(5, '0')).join('');
+	found.sort((a, b) => weight(b.version).localeCompare(weight(a.version)));
+	return found;
+}
+
+// versionHint — «8.3» из v8i или полная версия: база, помеченная 8.3, не
+// должна открываться платформой 8.2 только потому, что та новее по номеру.
+function resolvePlatformExe(versionHint) {
+	const manual = (extConfig().get('platformPath') || '').trim();
+	if (manual) return fs.existsSync(manual) ? manual : undefined;
+	const all = installedPlatforms();
+	if (all.length === 0) return undefined;
+	if (versionHint) {
+		const match = all.find((p) => p.version === versionHint || p.version.startsWith(versionHint + '.'));
+		if (match) return match.exe;
+	}
+	return all[0].exe;
+}
+
+// Файлы списка баз: пользовательский и общий — ровно те, что читает
+// 1cestart.exe. Своя база, заведённая руками в окне запуска 1С, лежит в
+// пользовательском; заведённая администратором на всех — в общем.
+function basesListFiles() {
+	const files = [];
+	const extra = extConfig().get('basesListFiles') || [];
+	for (const item of extra) if (item) files.push(item);
+	if (process.env.APPDATA) files.push(path.join(process.env.APPDATA, '1C', '1CEStart', 'ibases.v8i'));
+	if (process.env.ALLUSERSPROFILE) files.push(path.join(process.env.ALLUSERSPROFILE, '1C', '1CEStart', 'ibases.v8i'));
+	return files.filter((f, i) => fs.existsSync(f) && files.indexOf(f) === i);
+}
+
+// v8i — ini-подобный файл в UTF-8 с BOM: секция [Имя базы] и строки Ключ=Значение.
+// Секция без Connect — это папка дерева баз, а не база (её имя встречается в
+// Folder у вложенных баз), поэтому такие секции возвращаются отдельно.
+function parseV8i(text, source) {
+	const bases = [];
+	let current;
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		const section = line.match(/^\[(.+)\]$/);
+		if (section) {
+			current = { name: section[1].trim(), source, values: {} };
+			bases.push(current);
+			continue;
+		}
+		if (!current) continue;
+		const eq = line.indexOf('=');
+		if (eq <= 0) continue;
+		current.values[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+	}
+	return bases.map((b) => ({
+		name: b.name,
+		connect: b.values.Connect || '',
+		folder: b.values.Folder || '/',
+		version: b.values.Version || '',
+		source: b.source,
+		isFolder: !b.values.Connect,
+	}));
+}
+
+function readSystemBases() {
+	const result = [];
+	for (const file of basesListFiles()) {
+		let raw;
+		try { raw = fs.readFileSync(file); } catch (e) { continue; }
+		let text = raw.toString('utf8');
+		if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+		// v8i, записанный старым стартером, бывает в cp1251 — признак битой
+		// UTF-8-раскодировки: символ замены. Тогда перечитываем в cp1251.
+		if (text.includes('\uFFFD')) {
+			try { text = new TextDecoder('windows-1251').decode(raw); } catch (e) { /* оставляем как есть */ }
+		}
+		for (const base of parseV8i(text, file)) {
+			if (base.isFolder) continue;
+			if (!result.some((b) => b.name === base.name && b.connect === base.connect)) result.push(base);
+		}
+	}
+	result.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+	return result;
+}
+
+// «File="D:\BASES\x";» → путь; «Srvr="localhost";Ref="eo";» → localhost\eo.
+function describeConnect(connect) {
+	const file = connect.match(/File\s*=\s*"([^"]*)"/i);
+	if (file) return file[1];
+	const srvr = connect.match(/Srvr\s*=\s*"([^"]*)"/i);
+	const ref = connect.match(/Ref\s*=\s*"([^"]*)"/i);
+	if (srvr || ref) return `${srvr ? srvr[1] : '?'}\\${ref ? ref[1] : '?'}`;
+	return connect;
+}
+
+function baseFolderPath(connect) {
+	const file = connect.match(/File\s*=\s*"([^"]*)"/i);
+	return file ? file[1] : undefined;
+}
+
+// Запуск отвязан от VS Code: клиент 1С живёт своей жизнью (его закрывает
+// пользователь, а не редактор), поэтому detached + unref, без ожидания кода
+// возврата. Ошибку показываем только если процесс не стартовал вообще.
+function launch1C(mode, base) {
+	const exe = resolvePlatformExe(base.version);
+	if (!exe) {
+		vscode.window.showErrorMessage(
+			'Не найден 1cv8.exe. Укажите путь в настройке «qazdefense1c.platformPath» (1С: Настройка расширения).'
+		);
+		return false;
+	}
+	const args = [mode, '/IBConnectionString', base.connect.replace(/;+$/, '') + ';'];
+	try {
+		const child = cp.spawn(exe, args, { detached: true, stdio: 'ignore' });
+		child.on('error', (e) => vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`));
+		child.unref();
+	} catch (e) {
+		vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`);
+		return false;
+	}
+	const what = mode === 'DESIGNER' ? 'Конфигуратор' : 'Предприятие';
+	vscode.window.setStatusBarMessage(`$(rocket) ${what}: ${base.name}`, 5000);
+	return true;
+}
+
+let systemBasesProvider;
+
+class SystemBaseItem extends vscode.TreeItem {
+	constructor(base) {
+		super(base.name, vscode.TreeItemCollapsibleState.None);
+		this.iconPath = new vscode.ThemeIcon(base.connect.match(/Srvr\s*=/i) ? 'server' : 'database');
+		this.description = describeConnect(base.connect);
+		this.tooltip = `${base.connect}\n${base.source}`;
+		this.contextValue = 'system-base';
+		this.base = base;
+		this.command = { command: 'oneCLauncher.openBasePanel', title: 'Панель базы', arguments: [this] };
+	}
+}
+
+class SystemFolderItem extends vscode.TreeItem {
+	constructor(name, children, baseCount) {
+		super(name, vscode.TreeItemCollapsibleState.Collapsed);
+		this.iconPath = new vscode.ThemeIcon('folder');
+		this.description = String(baseCount);
+		this.contextValue = 'system-base-folder';
+		this.children = children;
+	}
+}
+
+function countBases(node) {
+	let total = node.bases.length;
+	for (const child of node.folders.values()) total += countBases(child);
+	return total;
+}
+
+function buildBaseNodes(node) {
+	const folders = [...node.folders.entries()]
+		.sort((a, b) => a[0].localeCompare(b[0], 'ru'))
+		.map(([name, child]) => new SystemFolderItem(name, buildBaseNodes(child), countBases(child)));
+	return [...folders, ...node.bases.map((b) => new SystemBaseItem(b))];
+}
+
+class SystemBasesTreeProvider {
+	constructor() {
+		this._onDidChangeTreeData = new vscode.EventEmitter();
+		this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+	}
+	refresh() { this._onDidChangeTreeData.fire(); }
+	getTreeItem(element) { return element; }
+	getChildren(element) {
+		if (element) return element.children || [];
+		const bases = readSystemBases();
+		if (bases.length === 0) {
+			const item = new vscode.TreeItem('Список баз 1С пуст — добавьте базу в окне запуска 1С');
+			item.iconPath = new vscode.ThemeIcon('info');
+			item.command = { command: 'oneCLauncher.openSetup', title: 'Настройка' };
+			return [item];
+		}
+		// Папки из v8i сохраняем вложенными ("/Клиенты/THP/КС" — три уровня):
+		// у кого три десятка баз, плоский список бесполезен ровно так же, как
+		// был бы в самом окне запуска 1С.
+		const tree = { folders: new Map(), bases: [] };
+		for (const base of bases) {
+			const parts = (base.folder || '/').split('/').map((p) => p.trim()).filter(Boolean);
+			let node = tree;
+			for (const part of parts) {
+				if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), bases: [] });
+				node = node.folders.get(part);
+			}
+			node.bases.push(base);
+		}
+		return buildBaseNodes(tree);
+	}
+}
+
+// Панель базы: то, что раньше было доступно только для базы проекта (запуск,
+// конфигуратор, пути), теперь открывается для любой базы из списка 1С.
+let basePanelWebview;
+
+function basePanelHtml(base, platform, platforms, inProject) {
+	const e = escapeHtml;
+	const folder = baseFolderPath(base.connect);
+	const rows = [
+		['Строка соединения', base.connect],
+		['Тип', base.connect.match(/Srvr\s*=/i) ? 'Клиент-серверная' : 'Файловая'],
+		folder ? ['Каталог', folder] : null,
+		base.version ? ['Версия в списке', base.version] : null,
+		['Платформа запуска', platform || 'не найдена'],
+		base.source ? ['Источник', base.source] : null,
+	].filter(Boolean);
+	const options = platforms.map((p) => `<option value="${e(p.exe)}">${e(p.version)}</option>`).join('');
+	return `<!doctype html><html><head><meta charset="utf-8">
+<style>
+	body { font-family: var(--vscode-font-family, sans-serif); color: var(--vscode-foreground);
+		background: var(--vscode-editor-background); padding: 16px 20px 24px; }
+	h2 { font-weight: 600; font-size: 15px; margin: 0 0 4px; }
+	.sub { font-size: 12px; opacity: .7; margin-bottom: 18px; }
+	.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+	button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: none; border-radius: 2px; cursor: pointer;
+		background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+	button:hover { background: var(--vscode-button-hoverBackground); }
+	button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+	table { border-collapse: collapse; width: 100%; font-size: 12px; }
+	td { padding: 5px 8px 5px 0; vertical-align: top; }
+	td.k { opacity: .65; white-space: nowrap; width: 170px; }
+	td.v { font-family: var(--vscode-editor-font-family, monospace); word-break: break-all; }
+	.hint { font-size: 11px; opacity: .6; margin-top: 14px; }
+</style></head><body>
+	<h2>${e(base.name)}</h2>
+	<div class="sub">${e(describeConnect(base.connect))}</div>
+	<div class="actions">
+		<button onclick="send('enterprise')">Запустить Предприятие</button>
+		<button onclick="send('designer')">Открыть Конфигуратор</button>
+		${folder ? '<button class="secondary" onclick="send(\'reveal\')">Открыть каталог</button>' : ''}
+		<button class="secondary" onclick="send('copy')">Копировать строку соединения</button>
+		${inProject ? '<button class="secondary" onclick="send(\'toProfile\')">Завести профилем проекта</button>' : ''}
+	</div>
+	<table>
+		${rows.map(([k, v]) => `<tr><td class="k">${e(k)}</td><td class="v">${e(v)}</td></tr>`).join('')}
+	</table>
+	${platforms.length > 1 ? `<div class="hint">Запускать платформой:
+		<select id="pf" onchange="send('platform', this.value)">
+			<option value="">по умолчанию (${e(platforms[0].version)})</option>${options}
+		</select> — выбор действует только на этот запуск.</div>` : ''}
+	<div class="hint">База берётся из общего списка 1С (ibases.v8i) — того же, что видит окно запуска 1С.</div>
+<script>
+	const vscodeApi = acquireVsCodeApi();
+	let platformOverride = '';
+	function send(action, value) {
+		if (action === 'platform') { platformOverride = value; return; }
+		vscodeApi.postMessage({ action, platform: platformOverride });
+	}
+</script>
+</body></html>`;
+}
+
+function openBasePanelCommand(item) {
+	const base = item && item.base ? item.base : item;
+	if (!base || !base.connect) return;
+	const platforms = installedPlatforms();
+	const inProject = !!getWorkspaceRoot();
+	if (basePanelWebview) basePanelWebview.dispose();
+	const panel = vscode.window.createWebviewPanel(
+		'oneCLauncherBasePanel', `База 1С: ${base.name}`, vscode.ViewColumn.One,
+		{ enableScripts: true, retainContextWhenHidden: false }
+	);
+	basePanelWebview = panel;
+	panel.onDidDispose(() => { if (basePanelWebview === panel) basePanelWebview = undefined; });
+	panel.webview.html = basePanelHtml(base, resolvePlatformExe(base.version), platforms, inProject);
+	panel.webview.onDidReceiveMessage(async (msg) => {
+		const target = msg.platform ? { ...base, forcedExe: msg.platform } : base;
+		if (msg.action === 'enterprise' || msg.action === 'designer') {
+			const mode = msg.action === 'designer' ? 'DESIGNER' : 'ENTERPRISE';
+			if (target.forcedExe) launchWithExe(target.forcedExe, mode, target);
+			else launch1C(mode, target);
+			return;
+		}
+		if (msg.action === 'reveal') {
+			const folder = baseFolderPath(base.connect);
+			if (folder && fs.existsSync(folder)) vscode.env.openExternal(vscode.Uri.file(folder));
+			else vscode.window.showWarningMessage('Каталог базы не найден на диске.');
+			return;
+		}
+		if (msg.action === 'copy') {
+			await vscode.env.clipboard.writeText(base.connect);
+			vscode.window.setStatusBarMessage('$(clippy) Строка соединения скопирована', 3000);
+			return;
+		}
+		if (msg.action === 'toProfile') {
+			createProfileFromSystemBase(base);
+		}
+	});
+}
+
+function launchWithExe(exe, mode, base) {
+	try {
+		const child = cp.spawn(exe, [mode, '/IBConnectionString', base.connect.replace(/;+$/, '') + ';'],
+			{ detached: true, stdio: 'ignore' });
+		child.on('error', (e) => vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`));
+		child.unref();
+	} catch (e) {
+		vscode.window.showErrorMessage(`Не удалось запустить 1С: ${e.message}`);
+	}
+}
+
+// Мост между двумя мирами: база из списка 1С → профиль проекта, чтобы к ней
+// стали доступны задачи деплоя и дерево метаданных. Поля подставляются в тот
+// же редактор профиля, что и «Добавить базу» — руками ничего перепечатывать.
+function createProfileFromSystemBase(base) {
+	const root = getWorkspaceRoot();
+	if (!root) {
+		vscode.window.showErrorMessage('Нет открытого воркспейса — профиль проекта завести некуда.');
+		return;
+	}
+	const srvr = base.connect.match(/Srvr\s*=\s*"([^"]*)"/i);
+	const ref = base.connect.match(/Ref\s*=\s*"([^"]*)"/i);
+	const file = baseFolderPath(base.connect);
+	const initial = {
+		configBase: '',
+		connectionType: srvr ? 'Server' : 'File',
+		filePath: file || '',
+		server: srvr ? srvr[1] : '',
+		ref: ref ? ref[1] : '',
+		platformPath: resolvePlatformExe(base.version) || '',
+		user: '',
+		password: '',
+	};
+	// Имя профиля — файл .psd1, поэтому только латиница (как и в «Добавить
+	// базу»), а имена баз в списке 1С обычно кириллицей: имя не подставляем,
+	// его вводит пользователь, всё остальное уже заполнено.
+	openProfileEditorPanel('add', '', initial, (name, values) => {
+		if (!name) return 'Нужно имя базы.';
+		if (!/^[A-Za-z0-9._-]+$/.test(name)) return 'Только латиница, цифры, точка, дефис, подчёркивание.';
+		const filePath = psd1Path(root, name);
+		if (fs.existsSync(filePath)) return `Профиль "${name}" уже есть.`;
+		fs.mkdirSync(path.dirname(filePath), { recursive: true });
+		fs.writeFileSync(filePath, '﻿' + buildPsd1(values), 'utf8');
+		if (basesTreeProvider) basesTreeProvider.refresh();
+		vscode.window.showInformationMessage(`Профиль «${name}» создан из базы «${base.name}».`);
+		return undefined;
+	});
+}
+
+// ============================================================================
+// Часть 7: мастер настройки — что уже готово, чего не хватает и как починить
+// ============================================================================
+
+function setupSteps() {
+	const root = getWorkspaceRoot();
+	const platforms = installedPlatforms();
+	const manual = (extConfig().get('platformPath') || '').trim();
+	const exe = resolvePlatformExe();
+	const bases = readSystemBases();
+	const listFiles = basesListFiles();
+	const steps = [];
+
+	steps.push({
+		title: 'Платформа 1С:Предприятие',
+		ok: !!exe,
+		text: exe
+			? `Найдена: ${exe}${platforms.length > 1 ? ` (всего версий: ${platforms.length})` : ''}`
+			: manual
+				? `В настройках указан несуществующий путь: ${manual}`
+				: 'Не найден 1cv8.exe в Program Files\\1cv8. Укажите путь вручную.',
+		action: { id: 'pickPlatform', label: 'Указать 1cv8.exe' },
+	});
+
+	steps.push({
+		title: 'Список баз 1С',
+		ok: bases.length > 0,
+		text: bases.length > 0
+			? `Баз в списке: ${bases.length}. Файлы: ${listFiles.join(', ')}`
+			: 'Ни одной базы не найдено. Заведите базу в окне запуска 1С — она появится здесь сама.',
+		action: { id: 'refreshBases', label: 'Перечитать список' },
+	});
+
+	const hasWorkspace = !!root;
+	const scriptsDir = root ? path.join(root, '.1С') : undefined;
+	const hasScripts = !!scriptsDir && fs.existsSync(path.join(scriptsDir, 'switch-base.ps1'));
+	steps.push({
+		title: 'Проект (необязательно)',
+		ok: hasWorkspace && hasScripts,
+		optional: true,
+		text: !hasWorkspace
+			? 'Папка не открыта. Без проекта работают базы и запуск; задачи деплоя и дерево метаданных — нет.'
+			: hasScripts
+				? `Скрипты проекта на месте: ${scriptsDir}`
+				: `В ${scriptsDir} нет switch-base.ps1 — задачи деплоя и переключение баз будут недоступны.`,
+		action: hasWorkspace ? null : { id: 'openFolder', label: 'Открыть папку' },
+	});
+
+	let profiles = 0;
+	if (root) {
+		try {
+			profiles = fs.readdirSync(path.join(root, '.1С', 'base-profiles'))
+				.filter((f) => f.toLowerCase().endsWith('.psd1')).length;
+		} catch (e) { profiles = 0; }
+	}
+	steps.push({
+		title: 'Профили баз проекта (необязательно)',
+		ok: profiles > 0,
+		optional: true,
+		text: profiles > 0
+			? `Профилей: ${profiles} (.1С/base-profiles/*.psd1)`
+			: 'Профилей нет. Профиль нужен, чтобы деплоить в базу и смотреть её метаданные.',
+		action: hasWorkspace ? { id: 'addProfile', label: 'Добавить базу' } : null,
+	});
+
+	let configurations = 0;
+	if (root) {
+		try {
+			configurations = fs.readdirSync(path.join(root, 'Configurations'), { withFileTypes: true })
+				.filter((d) => d.isDirectory()).length;
+		} catch (e) { configurations = 0; }
+	}
+	steps.push({
+		title: 'Выгрузки конфигураций (необязательно)',
+		ok: configurations > 0,
+		optional: true,
+		text: configurations > 0
+			? `Папок в Configurations: ${configurations} — дерево метаданных будет заполнено.`
+			: 'Папки Configurations/<База>/Configuration нет — дерево метаданных покажет пустоту. Выгрузите конфигурацию в XML из Конфигуратора.',
+		action: null,
+	});
+
+	return steps;
+}
+
+let setupPanel;
+
+function setupHtml(steps) {
+	const e = escapeHtml;
+	const done = steps.filter((s) => s.ok).length;
+	const rows = steps.map((step, index) => {
+		const mark = step.ok ? '✔' : step.optional ? '○' : '!';
+		const cls = step.ok ? 'ok' : step.optional ? 'opt' : 'bad';
+		const button = step.action
+			? `<button onclick="send('${e(step.action.id)}')">${e(step.action.label)}</button>`
+			: '';
+		return `<div class="step ${cls}">
+			<div class="mark">${mark}</div>
+			<div class="body">
+				<div class="title">${index + 1}. ${e(step.title)}</div>
+				<div class="text">${e(step.text)}</div>
+				${button}
+			</div>
+		</div>`;
+	}).join('');
+	return `<!doctype html><html><head><meta charset="utf-8">
+<style>
+	body { font-family: var(--vscode-font-family, sans-serif); color: var(--vscode-foreground);
+		background: var(--vscode-editor-background); padding: 18px 22px 28px; max-width: 900px; }
+	h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+	.sub { font-size: 12px; opacity: .7; margin-bottom: 20px; }
+	.step { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25)); }
+	.step:last-child { border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25)); }
+	.mark { width: 20px; font-size: 15px; text-align: center; }
+	.ok .mark { color: var(--vscode-charts-green, #3fb950); }
+	.bad .mark { color: var(--vscode-charts-red, #f85149); }
+	.opt .mark { opacity: .5; }
+	.title { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+	.text { font-size: 12px; opacity: .8; line-height: 1.5; }
+	button { margin-top: 8px; font-family: inherit; font-size: 12px; padding: 4px 12px; border: none; border-radius: 2px;
+		cursor: pointer; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+	button:hover { background: var(--vscode-button-hoverBackground); }
+	.next { margin-top: 22px; font-size: 12px; line-height: 1.7; opacity: .85; }
+	code { font-family: var(--vscode-editor-font-family, monospace); }
+</style></head><body>
+	<h2>Настройка 1С QazDefense Tools</h2>
+	<div class="sub">Готово ${done} из ${steps.length}. Пункты со знаком ○ необязательны — без них работают базы и запуск.</div>
+	${rows}
+	<div class="next">
+		<b>Что дальше</b><br>
+		Вкладка <b>1С: базы</b> — список баз 1С и профили проекта; клик по базе открывает панель запуска.<br>
+		Вкладка <b>1С: проект</b> — задачи деплоя и дерево метаданных активной базы проекта.<br>
+		Правый клик по объекту метаданных — ER-диаграмма, визуализация формы, просмотр макета, заимствование в расширение.<br>
+		Команды палитры (<code>Ctrl+Shift+P</code>) начинаются с «1С:».<br>
+		<b>Открыть эту страницу снова:</b> шестерёнка в заголовке любой панели вкладки
+		«1С: базы» или <code>Ctrl+Shift+P</code> → «1С: Настройка расширения».
+	</div>
+<script>
+	const vscodeApi = acquireVsCodeApi();
+	function send(action) { vscodeApi.postMessage({ action }); }
+</script>
+</body></html>`;
+}
+
+async function openSetupCommand() {
+	if (setupPanel) {
+		setupPanel.reveal();
+		setupPanel.webview.html = setupHtml(setupSteps());
+		return;
+	}
+	const panel = vscode.window.createWebviewPanel(
+		'oneCLauncherSetup', 'Настройка 1С QazDefense Tools', vscode.ViewColumn.One,
+		{ enableScripts: true, retainContextWhenHidden: false }
+	);
+	setupPanel = panel;
+	panel.onDidDispose(() => { if (setupPanel === panel) setupPanel = undefined; });
+	panel.webview.html = setupHtml(setupSteps());
+	panel.webview.onDidReceiveMessage(async (msg) => {
+		if (msg.action === 'pickPlatform') {
+			const picked = await vscode.window.showOpenDialog({
+				canSelectMany: false, canSelectFiles: true, canSelectFolders: false,
+				openLabel: 'Выбрать', filters: { 'Платформа 1С': ['exe'] },
+			});
+			if (picked && picked.length) {
+				await extConfig().update('platformPath', picked[0].fsPath, vscode.ConfigurationTarget.Global);
+			}
+		} else if (msg.action === 'refreshBases') {
+			if (systemBasesProvider) systemBasesProvider.refresh();
+		} else if (msg.action === 'openFolder') {
+			await vscode.commands.executeCommand('vscode.openFolder');
+			return;
+		} else if (msg.action === 'addProfile') {
+			await vscode.commands.executeCommand('oneCLauncher.addBaseProfile');
+		}
+		panel.webview.html = setupHtml(setupSteps());
+	});
+}
+
+// Мастер сам открывается один раз — на первом запуске расширения. Дальше
+// только по команде: навязчивый онбординг раздражает сильнее, чем помогает.
+function offerSetupOnce(context) {
+	if (context.globalState.get('setupShown')) return;
+	context.globalState.update('setupShown', true);
+	vscode.window.showInformationMessage(
+		'1С QazDefense Tools установлено. Открыть настройку и первые шаги? ' +
+		'Потом — шестерёнка в заголовке панели «1С: базы» или команда «1С: Настройка расширения».',
+		'Открыть', 'Позже'
+	).then((choice) => { if (choice === 'Открыть') openSetupCommand(); });
+}
+
+// ============================================================================
 // activate/deactivate
 // ============================================================================
 
@@ -1921,12 +2484,17 @@ async function borrowObjectCommand(item) {
 // — тот выбор, для чего этот контейнер, не должен смешиваться с содержимым
 // уже выбранного. Заголовок самого контейнера в activity bar статичен
 // (ограничение VS Code), поэтому имя базы — на заголовках вложенных панелей.
-let taskTreeView, metadataTreeView;
+// Те же задачи продублированы во вкладке "1С: базы": там выбирают базу, там же
+// хочется её и запустить, не переключаясь на соседнюю вкладку ради кнопки
+// "Запустить Предприятие". Провайдер один на оба дерева — состояние строки
+// (идёт/успех/ошибка) само отображается в обоих.
+let taskTreeView, metadataTreeView, baseTasksTreeView;
 function updateProjectViewTitles() {
 	const root = getWorkspaceRoot();
 	const baseName = root ? activeConfigBase(root) : undefined;
 	const suffix = baseName ? ` — ${baseName}` : '';
 	if (taskTreeView) taskTreeView.title = `Задачи${suffix}`;
+	if (baseTasksTreeView) baseTasksTreeView.title = `Задачи${suffix}`;
 	const filterSuffix = subsystemFilter ? ` · фильтр: ${subsystemFilter.label}` : '';
 	if (metadataTreeView) metadataTreeView.title = `Метаданные${suffix}${filterSuffix}`;
 	vscode.commands.executeCommand('setContext', 'oneCLauncherSubsystemFilterActive', !!subsystemFilter);
@@ -1967,17 +2535,27 @@ function activate(context) {
 	taskTreeProvider = new TaskTreeProvider();
 	basesTreeProvider = new BasesTreeProvider();
 	metadataTreeProvider = new MetadataTreeProvider();
+	systemBasesProvider = new SystemBasesTreeProvider();
 
 	taskTreeView = vscode.window.createTreeView('oneCLauncherView', { treeDataProvider: taskTreeProvider });
+	baseTasksTreeView = vscode.window.createTreeView('oneCLauncherBaseTasks', { treeDataProvider: taskTreeProvider });
 	metadataTreeView = vscode.window.createTreeView('oneCLauncherMetadata', { treeDataProvider: metadataTreeProvider });
 	updateProjectViewTitles();
 
 	context.subscriptions.push(
 		taskTreeView,
+		baseTasksTreeView,
 		metadataTreeView,
 		vscode.window.registerTreeDataProvider('oneCLauncherBases', basesTreeProvider),
+		vscode.window.registerTreeDataProvider('oneCLauncherSystemBases', systemBasesProvider),
 
 		vscode.commands.registerCommand('oneCLauncher.runTask', runTaskWithFeedback),
+		vscode.commands.registerCommand('oneCLauncher.openSetup', openSetupCommand),
+		vscode.commands.registerCommand('oneCLauncher.refreshSystemBases', () => systemBasesProvider.refresh()),
+		vscode.commands.registerCommand('oneCLauncher.openBasePanel', openBasePanelCommand),
+		vscode.commands.registerCommand('oneCLauncher.startEnterprise', (item) => launch1C('ENTERPRISE', item && item.base ? item.base : item)),
+		vscode.commands.registerCommand('oneCLauncher.startDesigner', (item) => launch1C('DESIGNER', item && item.base ? item.base : item)),
+		vscode.commands.registerCommand('oneCLauncher.createProfileFromBase', (item) => createProfileFromSystemBase(item && item.base ? item.base : item)),
 		vscode.commands.registerCommand('oneCLauncher.switchBase', switchBaseCommand),
 		vscode.commands.registerCommand('oneCLauncher.editBaseProfile', editBaseProfileCommand),
 		vscode.commands.registerCommand('oneCLauncher.addBaseProfile', addBaseProfileCommand),
@@ -1992,6 +2570,17 @@ function activate(context) {
 		vscode.commands.registerCommand('oneCLauncher.borrowObject', borrowObjectCommand),
 		vscode.commands.registerCommand('oneCLauncher.copyObjectPath', copyObjectPathCommand)
 	);
+
+	// Список баз 1С и путь к платформе меняются вне VS Code (окно запуска 1С,
+	// установка новой платформы) — перечитываем по изменению настройки и не
+	// заставляем перезапускать редактор.
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('qazdefense1c')) systemBasesProvider.refresh();
+		})
+	);
+
+	offerSetupOnce(context);
 }
 
 function deactivate() {}

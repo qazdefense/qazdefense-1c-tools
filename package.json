@@ -1,8 +1,8 @@
 {
   "name": "1c-tools",
   "displayName": "1С QazDefense Tools",
-  "description": "Базы 1С (добавление/редактирование), задачи запуска/деплоя, дерево метаданных как в Конфигураторе (заимствованные объекты, фильтр по подсистемам), ER-диаграммы связей, визуализация форм, просмотр макетов, предопределённые элементы и заимствование объектов в расширение — из боковой панели",
-  "version": "0.17.6",
+  "description": "Базы 1С этой машины с запуском Предприятия/Конфигуратора без проекта, мастер настройки, профили баз и задачи деплоя, дерево метаданных как в Конфигураторе (заимствованные объекты, фильтр по подсистемам), ER-диаграммы связей, визуализация форм, просмотр макетов, предопределённые элементы и заимствование объектов в расширение — из боковой панели",
+  "version": "0.18.1",
   "publisher": "qazdefense",
   "author": "QazDefense",
   "license": "SEE LICENSE IN LICENSE.md",
@@ -35,7 +35,7 @@
       "activitybar": [
         {
           "id": "oneCLauncher",
-          "title": "1С",
+          "title": "1С: базы",
           "icon": "icon-brand.png"
         },
         {
@@ -48,8 +48,16 @@
     "views": {
       "oneCLauncher": [
         {
+          "id": "oneCLauncherSystemBases",
+          "name": "Базы 1С"
+        },
+        {
           "id": "oneCLauncherBases",
-          "name": "Базы"
+          "name": "Базы проекта"
+        },
+        {
+          "id": "oneCLauncherBaseTasks",
+          "name": "Задачи"
         }
       ],
       "oneCLauncherProject": [
@@ -126,10 +134,45 @@
       {
         "command": "oneCLauncher.copyObjectPath",
         "title": "1С: Копировать путь объекта"
+      },
+      {
+        "command": "oneCLauncher.openSetup",
+        "title": "1С: Настройка расширения",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "oneCLauncher.refreshSystemBases",
+        "title": "1С: Обновить список баз 1С",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "oneCLauncher.openBasePanel",
+        "title": "1С: Панель базы",
+        "icon": "$(window)"
+      },
+      {
+        "command": "oneCLauncher.startEnterprise",
+        "title": "1С: Запустить Предприятие (база из списка)",
+        "icon": "$(play)"
+      },
+      {
+        "command": "oneCLauncher.startDesigner",
+        "title": "1С: Открыть Конфигуратор (база из списка)",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "oneCLauncher.createProfileFromBase",
+        "title": "1С: Завести профилем проекта",
+        "icon": "$(new-file)"
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "oneCLauncher.refreshSystemBases",
+          "when": "view == oneCLauncherSystemBases",
+          "group": "navigation@1"
+        },
         {
           "command": "oneCLauncher.addBaseProfile",
           "when": "view == oneCLauncherBases",
@@ -149,9 +192,44 @@
           "command": "oneCLauncher.refreshMetadata",
           "when": "view == oneCLauncherMetadata",
           "group": "navigation"
+        },
+        {
+          "command": "oneCLauncher.openSetup",
+          "when": "view == oneCLauncherSystemBases",
+          "group": "navigation@9"
+        },
+        {
+          "command": "oneCLauncher.openSetup",
+          "when": "view == oneCLauncherBases",
+          "group": "navigation@9"
+        },
+        {
+          "command": "oneCLauncher.openSetup",
+          "when": "view == oneCLauncherBaseTasks",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
+        {
+          "command": "oneCLauncher.startEnterprise",
+          "when": "view == oneCLauncherSystemBases && viewItem == system-base",
+          "group": "inline@1"
+        },
+        {
+          "command": "oneCLauncher.startDesigner",
+          "when": "view == oneCLauncherSystemBases && viewItem == system-base",
+          "group": "inline@2"
+        },
+        {
+          "command": "oneCLauncher.openBasePanel",
+          "when": "view == oneCLauncherSystemBases && viewItem == system-base",
+          "group": "1c@1"
+        },
+        {
+          "command": "oneCLauncher.createProfileFromBase",
+          "when": "view == oneCLauncherSystemBases && viewItem == system-base",
+          "group": "1c@2"
+        },
         {
           "command": "oneCLauncher.editBaseProfile",
           "when": "view == oneCLauncherBases && viewItem == base-profile",
@@ -233,6 +311,65 @@
           "group": "1c@7"
         }
       ]
-    }
+    },
+    "configuration": {
+      "title": "1С QazDefense Tools",
+      "properties": {
+        "qazdefense1c.platformPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Путь к `1cv8.exe`. Пусто — платформа ищется сама в `Program Files\\1cv8\\<версия>\\bin` (берётся самая новая, подходящая по версии базы)."
+        },
+        "qazdefense1c.basesListFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Дополнительные файлы списка баз (`*.v8i`). Пользовательский и общий `ibases.v8i` читаются всегда."
+        }
+      }
+    },
+    "walkthroughs": [
+      {
+        "id": "qazdefense1cStart",
+        "title": "1С QazDefense Tools: первые шаги",
+        "description": "Платформа, список баз, запуск и — при желании — проект с деплоем и метаданными.",
+        "steps": [
+          {
+            "id": "setup",
+            "title": "Проверить настройку",
+            "description": "Мастер покажет, что уже найдено (платформа, базы), а чего не хватает.\n[Открыть настройку](command:oneCLauncher.openSetup)",
+            "media": {
+              "markdown": "resources/walkthrough/setup.md"
+            }
+          },
+          {
+            "id": "bases",
+            "title": "Запустить базу",
+            "description": "Вкладка «1С: базы» — ваш обычный список баз 1С. Клик по базе открывает панель запуска.\n[Обновить список баз](command:oneCLauncher.refreshSystemBases)",
+            "media": {
+              "markdown": "resources/walkthrough/bases.md"
+            }
+          },
+          {
+            "id": "project",
+            "title": "Подключить проект (необязательно)",
+            "description": "Профиль базы в проекте открывает задачи деплоя и дерево метаданных.\n[Добавить базу проекта](command:oneCLauncher.addBaseProfile)",
+            "media": {
+              "markdown": "resources/walkthrough/project.md"
+            }
+          },
+          {
+            "id": "metadata",
+            "title": "Посмотреть метаданные",
+            "description": "Дерево как в Конфигураторе: ER-диаграммы, визуализация форм, макеты, заимствование в расширение.\n[Обновить метаданные](command:oneCLauncher.refreshMetadata)",
+            "media": {
+              "markdown": "resources/walkthrough/metadata.md"
+            }
+          }
+        ]
+      }
+    ]
   }
 }
