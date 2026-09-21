@@ -1,2 +1,9 @@
 *.vsix
 node_modules/
+
+# Реальные настройки деплоя (могут появиться при локальном тестировании
+# scripts/.1С/ прямо в этом репозитории) - не коммитим, там пароли.
+scripts/.1С/config.psd1
+scripts/.1С/base-profiles/
+scripts/.1С/bots/*.psd1
+scripts/.1С/logs/
