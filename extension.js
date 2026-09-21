@@ -2587,6 +2587,27 @@ function activate(context) {
 		})
 	);
 
+	// Живая жалоба: активная база (.1С/config.psd1) может смениться МИМО этой
+	// панели — из терминала (switch-base.ps1 напрямую), деплой-скриптом,
+	// git checkout, правкой файла руками. switchBaseCommand() сам обновляет
+	// заголовки и дерево профилей после переключения ЧЕРЕЗ панель, но без
+	// вотчера любое внешнее изменение оставляло зелёную точку и заголовок
+	// "Задачи — <старая база>" залипшими до ручного клика на "Обновить".
+	if (root) {
+		const configWatcher = vscode.workspace.createFileSystemWatcher(
+			new vscode.RelativePattern(root, '.1С/config.psd1')
+		);
+		const onConfigChanged = () => {
+			if (basesTreeProvider) basesTreeProvider.refresh();
+			if (metadataTreeProvider) metadataTreeProvider.refresh();
+			updateProjectViewTitles();
+		};
+		configWatcher.onDidChange(onConfigChanged);
+		configWatcher.onDidCreate(onConfigChanged);
+		configWatcher.onDidDelete(onConfigChanged);
+		context.subscriptions.push(configWatcher);
+	}
+
 	offerSetupOnce(context);
 }
 
