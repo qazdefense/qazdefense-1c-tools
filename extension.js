@@ -2566,7 +2566,15 @@ function activate(context) {
 		vscode.commands.registerCommand('oneCLauncher.switchBase', switchBaseCommand),
 		vscode.commands.registerCommand('oneCLauncher.editBaseProfile', editBaseProfileCommand),
 		vscode.commands.registerCommand('oneCLauncher.addBaseProfile', addBaseProfileCommand),
-		vscode.commands.registerCommand('oneCLauncher.refreshBases', () => basesTreeProvider.refresh()),
+		// Живая жалоба: "Обновить" у "Базы Проекта" двигал только зелёную
+		// точку в списке профилей, а заголовок "Задачи — <база>" оставался
+		// старым - это два независимых вызова, и раньше кнопка дёргала
+		// только первый. Ручной refresh теперь делает то же самое, что и
+		// switchBaseCommand()/вотчер config.psd1 - обновляет оба места разом.
+		vscode.commands.registerCommand('oneCLauncher.refreshBases', () => {
+			basesTreeProvider.refresh();
+			updateProjectViewTitles();
+		}),
 		vscode.commands.registerCommand('oneCLauncher.refreshMetadata', () => metadataTreeProvider.refresh()),
 		vscode.commands.registerCommand('oneCLauncher.showErDiagram', showErDiagramCommand),
 		vscode.commands.registerCommand('oneCLauncher.visualizeForm', visualizeFormCommand),
