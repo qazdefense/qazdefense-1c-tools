@@ -228,6 +228,69 @@ function Invoke-CheckModulesGate {
     }
 }
 
+# Разобрать текст лога /CheckConfig построчно. Формат строки диагностики:
+# "<ОбъектМетаданных> Сообщение (N)" - без фигурных скобок и без (строка,
+# столбец), в отличие от /CheckModules; N - количество вхождений. Чистый
+# прогон печатает одну строку "Ошибок не обнаружено" (без открытого
+# восклицательного знака - платформа не всегда единообразна между
+# командами). Понижений тут нет: набор флагов сознательно ограничен
+# -ConfigLogIntegrity (см. Invoke-CheckConfigGate) - без -IncorrectReferences,
+# который даёт известный шумный класс ("Справка Неразрешимые ссылки на
+# объекты метаданных" - битые ссылки на темы контекстной справки БСП,
+# косметика, не функциональная ошибка) - поэтому каждая строка здесь
+# трактуется как настоящая проблема.
+function ConvertFrom-CheckConfigLog([string]$LogText) {
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($rawLine in ($LogText -split "`r?`n")) {
+        $line = $rawLine.Trim()
+        if (-not $line) { continue }
+        if ($line -match '^Ошибок не обнаружено\.?$') { continue }
+        $result.Add([pscustomobject]@{ Line = $line; Blocking = $true })
+    }
+    return $result
+}
+
+# Гейт платформенной проверки целостности конфигурации перед /UpdateDBCfg.
+# Отдельная команда от /CheckModules: та проверяет синтаксис/семантику
+# BSL-модулей, эта -
+# логическую целостность самой конфигурации (ссылки метаданных, права,
+# формы и т.п. без разбора кода модулей) - платформа считает её "стандартной
+# проверкой, обычно выполняемой перед обновлением базы данных" (документация
+# /CheckConfig). Живой замер (2026-09-23, платформа 8.3.27.1989,
+# -ConfigLogIntegrity): 5 с на «TEST» (BSP-скелет), 10 с на УПр
+# (промышленный размер) - заметно дешевле /CheckModules. Сознательно БЕЗ
+# -IncorrectReferences (см. ConvertFrom-CheckConfigLog) - живой прогон на
+# «TEST» с этим флагом дал 12 диагностик "Справка Неразрешимые ссылки на
+# объекты метаданных" (битые темы контекстной справки БСП, не функциональная
+# проблема) - без отдельного класса понижения (как у CheckModules) это сразу
+# заблокировало бы каждый деплой на этой базе. Код возврата: 0 - чисто,
+# ненулевой (проверено - 101) - есть диагностики; лог, как и у CheckModules,
+# в UTF-8 с BOM.
+function Invoke-CheckConfigGate {
+    param(
+        [Parameter(Mandatory)][string]$LogPath,
+        [string]$Extension = "",
+        [string[]]$Modes = @("-ConfigLogIntegrity")
+    )
+    $extraArgs = @("/CheckConfig") + $Modes
+    if ($Extension) { $extraArgs += @("-Extension", $Extension) }
+    $exitCode = Invoke-Designer $extraArgs $LogPath
+    $text = if (Test-Path $LogPath) { [IO.File]::ReadAllText($LogPath, [Text.Encoding]::UTF8) } else { "" }
+    $parsed = @(ConvertFrom-CheckConfigLog $text)
+    $blocking = @($parsed | Where-Object { $_.Blocking })
+    # exit=0 - всегда ок. Ненулевой exit без единой распознанной диагностики
+    # не должен молча становиться "зелёным" (сбой вызова, незнакомый формат
+    # лога) - в отличие от CheckModules здесь нет класса понижаемых
+    # диагностик, так что "прощать" ненулевой exit нечем.
+    $ok = ($blocking.Count -eq 0) -and ($exitCode -eq 0)
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        LogPath  = $LogPath
+        Blocking = $blocking
+        Ok       = $ok
+    }
+}
+
 # Защита от повторного запуска интерактивного GUI-приложения 1С (Предприятие/
 # Конфигуратор) двойным нажатием кнопки/хоткея, пока предыдущее окно ещё
 # открыто - без -Wait скрипт возвращается мгновенно, и повторный клик просто

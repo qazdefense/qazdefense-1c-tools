@@ -1,17 +1,20 @@
-<#
+﻿<#
 Обновляет конфигурацию базы данных тестовой ИБ (/UpdateDBCfg) без загрузки
 файлов конфигурации — для случая, когда конфигурация в ИБ уже актуальна
 (например, после ручных правок в Конфигураторе) и нужно просто применить
 её к базе данных.
 
-Перед /UpdateDBCfg автоматически запускается /CheckModules -Server
--ThinClient — статический синтаксис-контроль ВСЕЙ конфигурации/расширения,
-~25-30 с (см. Invoke-CheckModulesGate в common.ps1 и deploy-to-ib.ps1).
-Находит ошибку до того, как она попадёт в применяемую к базе конфигурацию.
-Для расширений диагностика "Переменная не определена" на член расширяемого
-объекта — известное ложное срабатывание (см. базу знаний, статья про
-CheckModules) и не блокирует; любая другая диагностика блокирует.
-Отключить: -SkipCheckModules.
+Перед /UpdateDBCfg автоматически запускаются два гейта (те же, что у
+deploy-to-ib.ps1):
+1. /CheckModules -Server -ThinClient — статический синтаксис-контроль ВСЕЙ
+   конфигурации/расширения, ~25-30 с (см. Invoke-CheckModulesGate в
+   common.ps1). Для расширений диагностика "Переменная не определена" на
+   член расширяемого объекта — известное ложное срабатывание (см. базу
+   знаний, статья про CheckModules) и не блокирует; любая другая
+   диагностика блокирует. Отключить: -SkipCheckModules.
+2. /CheckConfig -ConfigLogIntegrity — платформенная проверка логической
+   целостности конфигурации, ~5-10 с (см. Invoke-CheckConfigGate в
+   common.ps1). Отключить: -SkipCheckConfig.
 
 Настройки берутся из .1С\config.psd1 (см. config.example.psd1 как шаблон).
 
@@ -19,7 +22,7 @@ CheckModules) и не блокирует; любая другая диагнос
   .\.1С\update-db.ps1
   .\.1С\update-db.ps1 -Extension tkz_test   # применить изменения расширения,
                                               # а не основной конфигурации
-  .\.1С\update-db.ps1 -SkipCheckModules      # без статического контроля
+  .\.1С\update-db.ps1 -SkipCheckModules -SkipCheckConfig   # без гейтов
 #>
 
 param(
@@ -32,7 +35,9 @@ param(
     [string]$AgentId = "",
     # Пропустить /CheckModules перед /UpdateDBCfg (см. описание выше).
     [switch]$SkipCheckModules,
-    [string[]]$CheckModulesModes = @("-Server", "-ThinClient")
+    [string[]]$CheckModulesModes = @("-Server", "-ThinClient"),
+    # Пропустить /CheckConfig -ConfigLogIntegrity перед /UpdateDBCfg.
+    [switch]$SkipCheckConfig
 )
 
 . (Join-Path $PSScriptRoot "common.ps1")
@@ -46,6 +51,7 @@ if ($Extension) {
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
 $checkModulesResult = $null
+$checkConfigResult = $null
 $exitCode = 0
 if (-not $SkipCheckModules) {
     $checkModulesLog = Join-Path $LogDir "checkmodules_$stamp.log"
@@ -56,6 +62,15 @@ if (-not $SkipCheckModules) {
         foreach ($item in $checkModulesResult.Blocking) { Write-Host "  $($item.Line)" }
     } elseif ($checkModulesResult.Downgraded.Count -gt 0) {
         Write-Host "CheckModules: $($checkModulesResult.Downgraded.Count) диагностик(и) понижены как известный ложноположительный класс (см. базу знаний)."
+    }
+}
+if (-not $SkipCheckConfig -and $exitCode -eq 0) {
+    $checkConfigLog = Join-Path $LogDir "checkconfig_$stamp.log"
+    $checkConfigResult = Invoke-CheckConfigGate -LogPath $checkConfigLog -Extension $Extension
+    if (-not $checkConfigResult.Ok) {
+        $exitCode = if ($checkConfigResult.ExitCode -ne 0) { $checkConfigResult.ExitCode } else { 1 }
+        Write-Warning "CheckConfig нашёл нарушения целостности - UpdateDBCfg пропущен (лог: $checkConfigLog)."
+        foreach ($item in $checkConfigResult.Blocking) { Write-Host "  $($item.Line)" }
     }
 }
 

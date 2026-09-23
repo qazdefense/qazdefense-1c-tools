@@ -19,14 +19,19 @@
                                                         # уйдёт от бота
                                                         # .1С\bots\myBot.psd1
 
-Перед /UpdateDBCfg (когда указан -UpdateDb) автоматически запускается
-/CheckModules -Server -ThinClient — статический синтаксис-контроль ВСЕЙ
-конфигурации/расширения, ~25-30 с. Находит ошибку до того, как она попадёт
-в применяемую к базе конфигурацию, а не по факту сбоя UpdateDBCfg или в
-рантайме у пользователя. Для расширений диагностика "Переменная не
-определена" на член расширяемого объекта — известное ложное срабатывание
-(см. базу знаний, статья про CheckModules) и не блокирует; любая другая
-диагностика блокирует деплой. Отключить: -SkipCheckModules.
+Перед /UpdateDBCfg (когда указан -UpdateDb) автоматически запускаются два
+гейта:
+1. /CheckModules -Server -ThinClient — статический синтаксис-контроль ВСЕЙ
+   конфигурации/расширения, ~25-30 с. Находит ошибку до того, как она
+   попадёт в применяемую к базе конфигурацию, а не по факту сбоя
+   UpdateDBCfg или в рантайме у пользователя. Для расширений диагностика
+   "Переменная не определена" на член расширяемого объекта — известное
+   ложное срабатывание (см. базу знаний, статья про CheckModules) и не
+   блокирует; любая другая диагностика блокирует деплой. Отключить:
+   -SkipCheckModules.
+2. /CheckConfig -ConfigLogIntegrity — платформенная проверка логической
+   целостности конфигурации (ссылки метаданных/права/формы, без разбора
+   BSL), ~5-10 с. Отключить: -SkipCheckConfig.
 #>
 
 param(
@@ -63,6 +68,10 @@ param(
     # конкретного вызова).
     [switch]$SkipCheckModules,
     [string[]]$CheckModulesModes = @("-Server", "-ThinClient"),
+    # Пропустить /CheckConfig -ConfigLogIntegrity перед /UpdateDBCfg (см.
+    # Invoke-CheckConfigGate в common.ps1) - платформенная проверка логической
+    # целостности конфигурации, отдельная от /CheckModules (тот - только BSL).
+    [switch]$SkipCheckConfig,
     # Опционально: имя файла .1С/bots/<AgentId>.psd1 с Telegram-настройками —
     # уведомление о результате деплоя уйдёт от этого бота (см. common.ps1,
     # $DeployAgentId). Пусто/нет такого файла = уведомление не шлётся вовсе.
@@ -270,7 +279,7 @@ function Test-DeploymentInputs($ChangedFiles, $ObjectDescriptors, [string]$Root)
     Write-Host "Preflight: объектов $($ObjectDescriptors.Count), XML проверено $validatedXml, BSL UTF-8 проверено $validatedBsl."
 }
 
-function Write-DeployReceipt([int]$LoadExitCode, $UpdateExitCode, [string]$LoadLogPath, [string]$UpdateLogPath, $CheckModulesResult) {
+function Write-DeployReceipt([int]$LoadExitCode, $UpdateExitCode, [string]$LoadLogPath, [string]$UpdateLogPath, $CheckModulesResult, $CheckConfigResult) {
     $receiptDir = Join-Path $LogDir "deploy-receipts"
     New-Item -ItemType Directory -Force -Path $receiptDir | Out-Null
     $taskId = if ($env:QAZDEFENSE_TASK_ID -match '^\d{1,20}$') { $env:QAZDEFENSE_TASK_ID } else { $null }
@@ -289,13 +298,24 @@ function Write-DeployReceipt([int]$LoadExitCode, $UpdateExitCode, [string]$LoadL
             downgraded = @($CheckModulesResult.Downgraded | ForEach-Object { $_.Line })
         }
     }
+    $checkConfigField = if ($null -eq $CheckConfigResult) {
+        [ordered]@{ ran = $false }
+    } else {
+        [ordered]@{
+            ran = $true
+            ok = $CheckConfigResult.Ok
+            exit_code = $CheckConfigResult.ExitCode
+            log = [IO.Path]::GetFileName($CheckConfigResult.LogPath)
+            blocking = @($CheckConfigResult.Blocking | ForEach-Object { $_.Line })
+        }
+    }
     $receipt = [ordered]@{
         schema_version = 1
         task_id = $taskId
         agent_id = if ($DeployAgentId) { $DeployAgentId } else { $null }
         started_at = $deployStartedAt.ToString("o")
         finished_at = [DateTime]::UtcNow.ToString("o")
-        success = ($LoadExitCode -eq 0 -and ($null -eq $CheckModulesResult -or $CheckModulesResult.Ok) -and ($null -eq $UpdateExitCode -or $UpdateExitCode -eq 0))
+        success = ($LoadExitCode -eq 0 -and ($null -eq $CheckModulesResult -or $CheckModulesResult.Ok) -and ($null -eq $CheckConfigResult -or $CheckConfigResult.Ok) -and ($null -eq $UpdateExitCode -or $UpdateExitCode -eq 0))
         phase = $Phase
         base = $ConfigBase
         target = if ($Extension) { "extension" } else { "configuration" }
@@ -307,6 +327,7 @@ function Write-DeployReceipt([int]$LoadExitCode, $UpdateExitCode, [string]$LoadL
         objects = if ($All) { @("*") } else { @($objects | Sort-Object) }
         load_exit_code = $LoadExitCode
         check_modules = $checkModulesField
+        check_config = $checkConfigField
         update_exit_code = $UpdateExitCode
         load_log = [IO.Path]::GetFileName($LoadLogPath)
         update_log = if ($UpdateLogPath) { [IO.Path]::GetFileName($UpdateLogPath) } else { $null }
@@ -446,6 +467,7 @@ if ($PlanOnly) {
 $loadExitCode = Invoke-Designer $loadArgs $loadLog
 $exitCode = $loadExitCode
 $checkModulesResult = $null
+$checkConfigResult = $null
 $updateExitCode = $null
 $updateLog = $null
 
@@ -464,6 +486,21 @@ if ($UpdateDb -and -not $SkipCheckModules -and $exitCode -eq 0) {
         foreach ($item in $checkModulesResult.Blocking) { Write-Host "  $($item.Line)" }
     } elseif ($checkModulesResult.Downgraded.Count -gt 0) {
         Write-Host "CheckModules: $($checkModulesResult.Downgraded.Count) диагностик(и) понижены как известный ложноположительный класс (см. базу знаний)."
+    }
+}
+
+# Платформенная проверка логической целостности конфигурации (см.
+# Invoke-CheckConfigGate в common.ps1) - отдельная от /CheckModules команда:
+# та смотрит только BSL, эта - ссылки метаданных/права/формы без разбора
+# кода модулей. Быстрее CheckModules (5-10 с против 25-30), поэтому идёт
+# после него без отдельной оговорки по времени.
+if ($UpdateDb -and -not $SkipCheckConfig -and $exitCode -eq 0) {
+    $checkConfigLog = Join-Path $LogDir "checkconfig_$stamp.log"
+    $checkConfigResult = Invoke-CheckConfigGate -LogPath $checkConfigLog -Extension $Extension
+    if (-not $checkConfigResult.Ok) {
+        $exitCode = if ($checkConfigResult.ExitCode -ne 0) { $checkConfigResult.ExitCode } else { 1 }
+        Write-Warning "CheckConfig нашёл нарушения целостности - UpdateDBCfg пропущен (лог: $checkConfigLog)."
+        foreach ($item in $checkConfigResult.Blocking) { Write-Host "  $($item.Line)" }
     }
 }
 
@@ -487,7 +524,7 @@ if ($UpdateDb -and $exitCode -eq 0) {
     $exitCode = $updateExitCode
 }
 
-[void](Write-DeployReceipt $loadExitCode $updateExitCode $loadLog $updateLog $checkModulesResult)
+[void](Write-DeployReceipt $loadExitCode $updateExitCode $loadLog $updateLog $checkModulesResult $checkConfigResult)
 
 # Успешный деплой фиксируем коммитом каталога базы: список файлов для
 # следующего деплоя считается от git HEAD, и без коммита каждый запуск
