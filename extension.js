@@ -2605,15 +2605,48 @@ function activate(context) {
 		const configWatcher = vscode.workspace.createFileSystemWatcher(
 			new vscode.RelativePattern(root, '.1С/config.psd1')
 		);
-		const onConfigChanged = () => {
+		// Хеш содержимого, а не время изменения: Copy-Item в switch-base.ps1
+		// переносит время файла-источника, по mtime смену базы не поймать.
+		const configHash = () => {
+			try {
+				return crypto.createHash('sha1').update(fs.readFileSync(path.join(root, '.1С', 'config.psd1'))).digest('hex');
+			} catch (e) {
+				return '';
+			}
+		};
+		let lastConfigHash = configHash();
+		let configTimer;
+		const refreshAll = () => {
 			if (basesTreeProvider) basesTreeProvider.refresh();
 			if (metadataTreeProvider) metadataTreeProvider.refresh();
 			updateProjectViewTitles();
+		};
+		// Копирование идет в два шага (обрезка + запись), поэтому события
+		// склеиваем и обновляем один раз, когда файл уже дописан.
+		const onConfigChanged = () => {
+			clearTimeout(configTimer);
+			configTimer = setTimeout(() => {
+				lastConfigHash = configHash();
+				refreshAll();
+			}, 400);
 		};
 		configWatcher.onDidChange(onConfigChanged);
 		configWatcher.onDidCreate(onConfigChanged);
 		configWatcher.onDidDelete(onConfigChanged);
 		context.subscriptions.push(configWatcher);
+
+		// Страховка: в долго живущем окне события вотчера на Windows перестают
+		// доходить, и метка активной базы залипает на старой (живая жалоба:
+		// агент вернул профиль на 1C_Storage, а панель показывала eo).
+		// Раз в 3 с сверяем содержимое config.psd1.
+		const configPoll = setInterval(() => {
+			const current = configHash();
+			if (current !== lastConfigHash) {
+				lastConfigHash = current;
+				refreshAll();
+			}
+		}, 3000);
+		context.subscriptions.push({ dispose: () => { clearInterval(configPoll); clearTimeout(configTimer); } });
 	}
 
 	offerSetupOnce(context);
