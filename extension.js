@@ -352,7 +352,7 @@ function buildPsd1(v) {
 // плюс кнопки "Обзор..." зовут обычный vscode.window.showOpenDialog.
 let profileEditorPanel;
 
-function profileEditorHtml(mode, name, initial) {
+function profileEditorHtml(mode, name, initial, folders) {
 	const e = escapeHtml;
 	const isServer = initial.connectionType === 'Server';
 	return `<!doctype html><html><head><meta charset="utf-8">
@@ -382,6 +382,10 @@ function profileEditorHtml(mode, name, initial) {
 	.err { color: var(--vscode-errorForeground); font-size: 12px; min-height: 16px; margin-top: 8px; }
 	fieldset { border: 1px solid var(--vscode-widget-border, #444); border-radius: 3px; margin: 0 0 14px; padding: 10px 12px 4px; }
 	legend { font-size: 11px; opacity: .7; padding: 0 4px; }
+		label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; opacity: 1; margin: 6px 0 0; cursor: pointer; }
+		label.check.off { opacity: .45; cursor: default; }
+		#cbState.ok { color: var(--vscode-testing-iconPassed, #73c991); }
+		#cbState.no { color: var(--vscode-editorWarning-foreground, #cca700); }
 </style></head>
 <body>
 <h2>${mode === 'add' ? 'Новая база 1С' : `Настройки базы «${e(name)}»`}</h2>
@@ -394,7 +398,9 @@ function profileEditorHtml(mode, name, initial) {
 	<div class="row">
 		<label for="configBase">ConfigBase — папка в Configurations/&lt;Имя&gt;</label>
 		<input type="text" id="configBase" value="${e(initial.configBase)}" placeholder="Болванка">
-		<div class="hint">Пусто = Болванка.</div>
+		<div class="hint">Пусто = Болванка. <span id="cbState"></span></div>
+		<label class="check"><input type="checkbox" id="createFolders"><span>Создать папку Configurations/<b id="cbName"></b> с Configuration и Extensions</span></label>
+		<label class="check"><input type="checkbox" id="dumpNow"><span>Сразу выгрузить конфигурацию из базы в Configuration (Конфигуратор в фоне, несколько минут)</span></label>
 	</div>
 	<fieldset>
 		<legend>Подключение к информационной базе</legend>
@@ -450,6 +456,23 @@ function profileEditorHtml(mode, name, initial) {
 	}
 	document.querySelectorAll('input[name=connectionType]').forEach((r) => r.addEventListener('change', syncConnType));
 	syncConnType();
+	// Папка базы: есть ли Configurations/<ConfigBase> и выгрузка в ней. Галочки включаются, только когда есть что делать.
+	const FOLDERS = ${JSON.stringify(folders || {})};
+	function syncFolder() {
+		const cb = ($('configBase').value.trim() || 'Болванка');
+		const info = FOLDERS[cb.toLowerCase().replace(/\\//g, '\\\\')] || { exists: false, hasDump: false };
+		$('cbName').textContent = cb;
+		const st = $('cbState');
+		st.textContent = info.exists ? (info.hasDump ? 'Папка есть, конфигурация выгружена.' : 'Папка есть, выгрузки конфигурации нет.') : 'Папки нет.';
+		st.className = info.exists && info.hasDump ? 'ok' : 'no';
+		const cf = $('createFolders'), dn = $('dumpNow');
+		cf.disabled = info.exists; cf.checked = !info.exists;
+		cf.parentElement.classList.toggle('off', info.exists);
+		dn.disabled = info.hasDump; if (info.hasDump) dn.checked = false;
+		dn.parentElement.classList.toggle('off', info.hasDump);
+	}
+	$('configBase').addEventListener('input', syncFolder);
+	syncFolder();
 	$('browseFile').addEventListener('click', () => vscode.postMessage({ type: 'browseFolder', target: 'filePath', current: $('filePath').value }));
 	$('browsePlatform').addEventListener('click', () => vscode.postMessage({ type: 'browseFile', target: 'platformPath', current: $('platformPath').value }));
 	$('cancel').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
@@ -467,6 +490,8 @@ function profileEditorHtml(mode, name, initial) {
 				platformPath: $('platformPath').value,
 				user: $('user').value,
 				password: $('password').value,
+				createFolders: $('createFolders').checked,
+				dumpNow: $('dumpNow').checked,
 			},
 		});
 	});
@@ -489,7 +514,7 @@ function openProfileEditorPanel(mode, name, initial, onSave) {
 	);
 	profileEditorPanel = panel;
 	panel.onDidDispose(() => { if (profileEditorPanel === panel) profileEditorPanel = undefined; });
-	panel.webview.html = profileEditorHtml(mode, name, initial);
+	panel.webview.html = profileEditorHtml(mode, name, initial, configFolderStates(getWorkspaceRoot()));
 	panel.webview.onDidReceiveMessage(async (msg) => {
 		if (msg.type === 'cancel') {
 			panel.dispose();
@@ -521,6 +546,98 @@ function openProfileEditorPanel(mode, name, initial, onSave) {
 	});
 }
 
+// Папки Configurations/<ConfigBase> (вложенные, например "UNIX\\BK UNIX", тоже): есть ли и выгружена ли конфигурация.
+function configFolderStates(root) {
+	const out = {};
+	const base = root && path.join(root, 'Configurations');
+	if (!base || !fs.existsSync(base)) return out;
+	const visit = (dir, rel, depth) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
+			const full = path.join(dir, entry.name);
+			const key = (rel ? rel + '\\' : '') + entry.name;
+			const confDir = path.join(full, 'Configuration');
+			if (fs.existsSync(confDir) || fs.existsSync(path.join(full, 'Extensions'))) {
+				out[key.toLowerCase()] = { exists: true, hasDump: fs.existsSync(path.join(confDir, 'Configuration.xml')) };
+			} else if (depth < 1) {
+				out[key.toLowerCase()] = { exists: true, hasDump: false };
+				visit(full, key, depth + 1);
+			}
+		}
+	};
+	visit(base, '', 0);
+	return out;
+}
+
+function configBaseDir(root, configBase) {
+	const rel = String(configBase || '').trim() || 'Болванка';
+	if (/(^|[\\/])\.\.([\\/]|$)/.test(rel) || path.isAbsolute(rel) || /[:*?"<>|]/.test(rel)) {
+		throw new Error(`Недопустимое имя папки ConfigBase: ${rel}`);
+	}
+	return path.join(root, 'Configurations', rel);
+}
+
+// Галочки формы профиля: создать Configurations/<ConfigBase>/{Configuration,Extensions} и выгрузить конфигурацию.
+function applyFolderOptions(root, values) {
+	if (!values.createFolders && !values.dumpNow) return;
+	let dir;
+	try {
+		dir = configBaseDir(root, values.configBase);
+	} catch (e) {
+		vscode.window.showErrorMessage(e.message);
+		return;
+	}
+	const confDir = path.join(dir, 'Configuration');
+	if (values.createFolders || values.dumpNow) {
+		fs.mkdirSync(confDir, { recursive: true });
+		fs.mkdirSync(path.join(dir, 'Extensions'), { recursive: true });
+	}
+	if (!values.dumpNow) {
+		vscode.window.showInformationMessage(`Папка создана: Configurations/${values.configBase || 'Болванка'} (Configuration, Extensions).`);
+		return;
+	}
+	if (fs.readdirSync(confDir).length > 0) {
+		vscode.window.showWarningMessage(`В ${confDir} уже есть файлы - выгрузку не запускаю, чтобы ничего не перезаписать.`);
+		return;
+	}
+	dumpConfigToFolder(root, values, confDir);
+}
+
+function dumpConfigToFolder(root, values, confDir) {
+	const exe = values.platformPath;
+	if (!exe || !fs.existsSync(exe)) {
+		vscode.window.showErrorMessage('Для выгрузки нужен путь к 1cv8.exe в профиле.');
+		return;
+	}
+	const args = ['DESIGNER'];
+	if (values.connectionType === 'Server') args.push('/S', `${values.server}\\${values.ref}`);
+	else args.push('/F', values.filePath);
+	if (values.user) args.push('/N', values.user);
+	if (values.password) args.push('/P', values.password);
+	const logDir = path.join(root, '.1С', 'logs');
+	fs.mkdirSync(logDir, { recursive: true });
+	const log = path.join(logDir, `dump_new_${Date.now()}.log`);
+	args.push('/DisableStartupDialogs', '/DisableStartupMessages', '/DumpConfigToFiles', confDir, '/Out', log);
+	const shown = `Configurations/${values.configBase || 'Болванка'}/Configuration`;
+	vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: `Выгрузка конфигурации в ${shown}...` },
+		() => new Promise((resolve) => {
+			cp.execFile(exe, args, { windowsHide: true, maxBuffer: 1024 * 1024 }, (err) => {
+				const done = fs.existsSync(path.join(confDir, 'Configuration.xml'));
+				if (done) {
+					vscode.window.showInformationMessage(`Конфигурация выгружена в ${shown}.`);
+					if (metadataTreeProvider) metadataTreeProvider.refresh();
+				} else {
+					let text = '';
+					try { text = fs.readFileSync(log, 'utf8').trim().slice(-400); } catch (_) { /* лога может не быть */ }
+					vscode.window.showErrorMessage(`Выгрузка не удалась${err ? ` (${err.message})` : ''}. ${text} Лог: ${log}`);
+				}
+				resolve();
+			});
+		})
+	);
+}
+
 function editBaseProfileCommand(item) {
 	const name = item && item.profileName;
 	const root = getWorkspaceRoot();
@@ -529,6 +646,7 @@ function editBaseProfileCommand(item) {
 	const initial = readBaseProfileFile(filePath);
 	openProfileEditorPanel('edit', name, initial, (_name, values) => {
 		fs.writeFileSync(filePath, '﻿' + buildPsd1(values), 'utf8');
+		applyFolderOptions(root, values);
 		const activeNote = item.isActiveProfile
 			? ' Это активный профиль — чтобы правки применились, переключитесь на базу ещё раз (клик по ней).'
 			: '';
@@ -559,6 +677,7 @@ function addBaseProfileCommand() {
 		if (fs.existsSync(filePath)) return `Профиль "${name}" уже есть.`;
 		fs.mkdirSync(path.dirname(filePath), { recursive: true });
 		fs.writeFileSync(filePath, '﻿' + buildPsd1(values), 'utf8');
+		applyFolderOptions(root, values);
 		vscode.window.showInformationMessage(`База "${name}" добавлена. Кликните по ней в «Базы проекта», чтобы сделать активной.`);
 		if (basesTreeProvider) basesTreeProvider.refresh();
 		return undefined;
