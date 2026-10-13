@@ -295,7 +295,7 @@ function psd1BlockField(text, blockName, fieldName) {
 }
 
 function readBaseProfileFile(filePath) {
-	const empty = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '' };
+	const empty = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto' };
 	if (!fs.existsSync(filePath)) return empty;
 	const text = fs.readFileSync(filePath, 'utf8');
 	const top = (field) => {
@@ -311,6 +311,7 @@ function readBaseProfileFile(filePath) {
 		platformPath: top('PlatformPath'),
 		user: psd1BlockField(text, 'Auth', 'User'),
 		password: psd1BlockField(text, 'Auth', 'Password'),
+		smokeTests: top('SmokeTests') || 'auto',
 	};
 }
 
@@ -335,6 +336,9 @@ function buildPsd1(v) {
 		'    }',
 		'',
 		`    PlatformPath = "${e(v.platformPath)}"`,
+		'',
+		'    # Дымовые тесты (.1С/smoke-tests.ps1): auto - если с базой работали за неделю, on - всегда, off - никогда',
+		`    SmokeTests = "${e(['auto', 'on', 'off'].includes(v.smokeTests) ? v.smokeTests : 'auto')}"`,
 		'',
 		'    Auth = @{',
 		`        User = "${e(v.user)}"`,
@@ -363,7 +367,7 @@ function profileEditorHtml(mode, name, initial, folders) {
 	.row { margin-bottom: 12px; }
 	label { display: block; font-size: 12px; opacity: .8; margin-bottom: 4px; }
 	.hint { font-size: 11px; opacity: .6; margin-top: 3px; }
-	input[type=text], input[type=password] {
+	input[type=text], input[type=password], select {
 		width: 100%; box-sizing: border-box; padding: 5px 7px; font-family: inherit; font-size: 13px;
 		background: var(--vscode-input-background); color: var(--vscode-input-foreground);
 		border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px;
@@ -430,6 +434,14 @@ function profileEditorHtml(mode, name, initial, folders) {
 			<button type="button" id="browsePlatform">Обзор...</button>
 		</div>
 	</div>
+	<div class="row">
+		<label for="smokeTests">Дымовые тесты (YAxUnit Smoke: открытие форм после деплоя и ночью)</label>
+		<select id="smokeTests">
+			<option value="auto" ${(initial.smokeTests || 'auto') === 'auto' ? 'selected' : ''}>Авто - если с базой работали за последнюю неделю</option>
+			<option value="on" ${initial.smokeTests === 'on' ? 'selected' : ''}>Всегда</option>
+			<option value="off" ${initial.smokeTests === 'off' ? 'selected' : ''}>Выключены</option>
+		</select>
+	</div>
 	<fieldset>
 		<legend>Авторизация (пусто — без пароля)</legend>
 		<div class="row">
@@ -495,6 +507,7 @@ function profileEditorHtml(mode, name, initial, folders) {
 				platformPath: $('platformPath').value,
 				user: $('user').value,
 				password: $('password').value,
+				smokeTests: $('smokeTests').value,
 				createFolders: $('createFolders').checked,
 				dumpNow: $('dumpNow').checked,
 				vendorConfig: $('vendorConfig').checked && !$('vendorConfig').disabled,
@@ -699,7 +712,7 @@ function addBaseProfileCommand() {
 
 	// PlatformPath и логин обычно одни и те же на все базы этой машины —
 	// подхватываем их из текущего активного профиля, чтобы не вводить заново.
-	const initial = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '' };
+	const initial = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto' };
 	const activeConfigPath = path.join(root, '.1С', 'config.psd1');
 	if (fs.existsSync(activeConfigPath)) {
 		const active = readBaseProfileFile(activeConfigPath);
