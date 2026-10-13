@@ -400,6 +400,7 @@ function profileEditorHtml(mode, name, initial, folders) {
 		<input type="text" id="configBase" value="${e(initial.configBase)}" placeholder="Болванка">
 		<div class="hint">Пусто = Болванка. <span id="cbState"></span></div>
 		<label class="check"><input type="checkbox" id="createFolders"><span>Создать папку Configurations/<b id="cbName"></b> с Configuration и Extensions</span></label>
+		<label class="check"><input type="checkbox" id="vendorConfig"><span>Типовая конфигурация: не хранить Configuration в git (правило в .gitignore, Extensions хранятся) <span id="vcState"></span></span></label>
 		<label class="check"><input type="checkbox" id="dumpNow"><span>Сразу выгрузить конфигурацию из базы в Configuration (Конфигуратор в фоне, несколько минут)</span></label>
 	</div>
 	<fieldset>
@@ -470,6 +471,10 @@ function profileEditorHtml(mode, name, initial, folders) {
 		cf.parentElement.classList.toggle('off', info.exists);
 		dn.disabled = info.hasDump; if (info.hasDump) dn.checked = false;
 		dn.parentElement.classList.toggle('off', info.hasDump);
+		const vc = $('vendorConfig');
+		vc.disabled = !!info.ignored; vc.checked = info.ignored ? true : !info.exists;
+		vc.parentElement.classList.toggle('off', !!info.ignored);
+		$('vcState').textContent = info.ignored ? '- уже в .gitignore' : '';
 	}
 	$('configBase').addEventListener('input', syncFolder);
 	syncFolder();
@@ -492,6 +497,7 @@ function profileEditorHtml(mode, name, initial, folders) {
 				password: $('password').value,
 				createFolders: $('createFolders').checked,
 				dumpNow: $('dumpNow').checked,
+				vendorConfig: $('vendorConfig').checked && !$('vendorConfig').disabled,
 			},
 		});
 	});
@@ -558,15 +564,37 @@ function configFolderStates(root) {
 			const key = (rel ? rel + '\\' : '') + entry.name;
 			const confDir = path.join(full, 'Configuration');
 			if (fs.existsSync(confDir) || fs.existsSync(path.join(full, 'Extensions'))) {
-				out[key.toLowerCase()] = { exists: true, hasDump: fs.existsSync(path.join(confDir, 'Configuration.xml')) };
+				out[key.toLowerCase()] = { exists: true, hasDump: fs.existsSync(path.join(confDir, 'Configuration.xml')), rel: key };
 			} else if (depth < 1) {
-				out[key.toLowerCase()] = { exists: true, hasDump: false };
+				out[key.toLowerCase()] = { exists: true, hasDump: false, rel: key };
 				visit(full, key, depth + 1);
 			}
 		}
 	};
 	visit(base, '', 0);
+	const keys = Object.keys(out);
+	try {
+		// исходный регистр имен: git без учета регистра сравнивает только латиницу (БП и бп для него разные)
+		const probe = (k) => `Configurations/${out[k].rel.replace(/\\/g, '/')}/Configuration/x.xml`;
+		const res = cp.spawnSync('git', ['-C', root, '-c', 'core.quotepath=false', 'check-ignore', '--stdin'],
+			{ input: keys.map(probe).join('\n'), encoding: 'utf8', windowsHide: true, timeout: 10000 });
+		const ignored = new Set((res.stdout || '').split(/\r?\n/).filter(Boolean));
+		for (const k of keys) out[k].ignored = ignored.has(probe(k));
+	} catch (_) { /* без git - просто не показываем состояние */ }
 	return out;
+}
+
+// Типовая конфигурация не хранится в git целиком (десятки тысяч файлов, файлы поставщика по сотни МБ):
+// правило в .gitignore, как у ЗУП, БП, UNIX. Extensions/ этой базы хранятся.
+function addVendorIgnore(root, configBase) {
+	const rel = (String(configBase || '').trim() || 'Болванка').replace(/\\/g, '/');
+	const file = path.join(root, '.gitignore');
+	const line = `Configurations/${rel}/Configuration/`;
+	const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+	if (text.split(/\r?\n/).includes(line)) return false;
+	const block = `\n# «${rel}» - типовая конфигурация (справочник), Configuration/ не храним, Extensions/* хранятся. Добавлено из формы базы 1c-tools.\n${line}\n`;
+	fs.writeFileSync(file, text.replace(/\s*$/, '\n') + block, 'utf8');
+	return true;
 }
 
 function configBaseDir(root, configBase) {
@@ -579,6 +607,15 @@ function configBaseDir(root, configBase) {
 
 // Галочки формы профиля: создать Configurations/<ConfigBase>/{Configuration,Extensions} и выгрузить конфигурацию.
 function applyFolderOptions(root, values) {
+	if (values.vendorConfig) {
+		try {
+			if (addVendorIgnore(root, values.configBase)) {
+				vscode.window.showInformationMessage(`В .gitignore добавлено: Configurations/${(values.configBase || 'Болванка').replace(/\\/g, '/')}/Configuration/ (типовая конфигурация).`);
+			}
+		} catch (e) {
+			vscode.window.showErrorMessage(`Не удалось дописать .gitignore: ${e.message}`);
+		}
+	}
 	if (!values.createFolders && !values.dumpNow) return;
 	let dir;
 	try {
