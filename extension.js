@@ -373,6 +373,9 @@ function profileEditorHtml(mode, name, initial, folders) {
 		border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px;
 	}
 	.pathrow { display: flex; gap: 6px; }
+	.pwrow { display: flex; gap: 6px; }
+	.pwrow input { flex: 1; }
+	button.eye { display: inline-flex; align-items: center; justify-content: center; padding: 0 9px; }
 	.pathrow input { flex: 1; }
 	button { padding: 5px 12px; font-size: 13px; border: 1px solid var(--vscode-button-border, transparent);
 		border-radius: 2px; cursor: pointer; background: var(--vscode-button-secondaryBackground);
@@ -450,7 +453,13 @@ function profileEditorHtml(mode, name, initial, folders) {
 		</div>
 		<div class="row">
 			<label for="password">Пароль</label>
-			<input type="password" id="password" value="${e(initial.password)}">
+			<div class="pwrow">
+				<input type="password" id="password" value="${e(initial.password)}" autocomplete="off">
+				<button type="button" id="pwToggle" class="eye" title="Показать пароль" aria-label="Показать пароль">
+					<svg id="pwEyeOn" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+					<svg id="pwEyeOff" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.9 17.9A10.9 10.9 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.1-5.9M9.9 5.1A10.9 10.9 0 0 1 12 5c7 0 11 7 11 7a18.5 18.5 0 0 1-2.2 3.2M1 1l22 22"/><path d="M14.1 14.1A3 3 0 1 1 9.9 9.9"/></svg>
+				</button>
+			</div>
 		</div>
 	</fieldset>
 	<div class="actions">
@@ -493,6 +502,14 @@ function profileEditorHtml(mode, name, initial, folders) {
 	$('browseFile').addEventListener('click', () => vscode.postMessage({ type: 'browseFolder', target: 'filePath', current: $('filePath').value }));
 	$('browsePlatform').addEventListener('click', () => vscode.postMessage({ type: 'browseFile', target: 'platformPath', current: $('platformPath').value }));
 	$('cancel').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
+	$('pwToggle').addEventListener('click', () => {
+		const field = $('password'), show = field.type === 'password';
+		field.type = show ? 'text' : 'password';
+		$('pwEyeOn').style.display = show ? 'none' : '';
+		$('pwEyeOff').style.display = show ? '' : 'none';
+		$('pwToggle').title = show ? 'Скрыть пароль' : 'Показать пароль';
+		$('pwToggle').setAttribute('aria-label', $('pwToggle').title);
+	});
 	document.getElementById('f').addEventListener('submit', (ev) => {
 		ev.preventDefault();
 		vscode.postMessage({
