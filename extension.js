@@ -183,6 +183,26 @@ class BaseItem extends vscode.TreeItem {
 	}
 }
 
+// Сегменты профилей: поле Segment в .1С/base-profiles/<Имя>.psd1 (его отдает switch-base.ps1 -List -Json как segment).
+// Без сегмента ни у одного профиля панель остается плоским списком, как раньше.
+const SEGMENTS = {
+	test: { title: 'Тестовые и обезличенные копии', icon: 'beaker', order: 1 },
+	own: { title: 'Свои конфигурации', icon: 'package', order: 2 },
+	client: { title: 'Клиентские', icon: 'organization', order: 3 },
+};
+
+class SegmentItem extends vscode.TreeItem {
+	constructor(key, profiles) {
+		const meta = SEGMENTS[key] || { title: key || 'Без сегмента', icon: 'folder', order: 9 };
+		super(meta.title, vscode.TreeItemCollapsibleState.Expanded);
+		this.iconPath = new vscode.ThemeIcon(meta.icon);
+		this.description = String(profiles.length);
+		this.contextValue = 'base-segment';
+		this.profiles = profiles;
+		this.order = meta.order;
+	}
+}
+
 class BasesTreeProvider {
 	constructor() {
 		this._onDidChangeTreeData = new vscode.EventEmitter();
@@ -190,7 +210,8 @@ class BasesTreeProvider {
 	}
 	refresh() { this._onDidChangeTreeData.fire(); }
 	getTreeItem(element) { return element; }
-	async getChildren() {
+	async getChildren(element) {
+		if (element instanceof SegmentItem) return element.profiles.map((p) => new BaseItem(p));
 		const root = getWorkspaceRoot();
 		if (!root) return [];
 		try {
@@ -202,7 +223,14 @@ class BasesTreeProvider {
 				item.iconPath = new vscode.ThemeIcon('info');
 				return [item];
 			}
-			return profiles.map((p) => new BaseItem(p));
+			if (!profiles.some((p) => p.segment)) return profiles.map((p) => new BaseItem(p));
+			const groups = new Map();
+			for (const p of profiles) {
+				const key = p.segment || '';
+				if (!groups.has(key)) groups.set(key, []);
+				groups.get(key).push(p);
+			}
+			return [...groups.entries()].map(([key, list]) => new SegmentItem(key, list)).sort((a, b) => a.order - b.order);
 		} catch (e) {
 			const item = new vscode.TreeItem(`Ошибка чтения профилей: ${e.message}`);
 			item.iconPath = new vscode.ThemeIcon('error');
@@ -247,7 +275,7 @@ async function switchBaseCommand(profileName) {
 		}
 		const items = profiles.map((p) => ({
 			label: (p.active ? '$(check) ' : '') + p.name,
-			description: p.config_base || '',
+			description: [p.segment && (SEGMENTS[p.segment] || {}).title, p.config_base].filter(Boolean).join(' · '),
 			detail: p.target || p.error || '',
 			profileName: p.name,
 		}));
@@ -295,7 +323,7 @@ function psd1BlockField(text, blockName, fieldName) {
 }
 
 function readBaseProfileFile(filePath) {
-	const empty = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto' };
+	const empty = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto', segment: '' };
 	if (!fs.existsSync(filePath)) return empty;
 	const text = fs.readFileSync(filePath, 'utf8');
 	const top = (field) => {
@@ -312,6 +340,7 @@ function readBaseProfileFile(filePath) {
 		user: psd1BlockField(text, 'Auth', 'User'),
 		password: psd1BlockField(text, 'Auth', 'Password'),
 		smokeTests: top('SmokeTests') || 'auto',
+		segment: top('Segment'),
 	};
 }
 
@@ -321,9 +350,11 @@ function psd1Escape(value) {
 
 function buildPsd1(v) {
 	const e = psd1Escape;
+	const segment = /^[A-Za-z0-9_-]{1,32}$/.test(v.segment || '') ? v.segment : '';
 	return [
 		'@{',
 		`    ConfigBase = "${e(v.configBase)}"`,
+		...(segment ? ['    # Сегмент для группировки в панели «Базы проекта»: test - тестовые и обезличенные копии, client - клиентские, own - свои', `    Segment = "${segment}"`] : []),
 		`    ConnectionType = "${e(v.connectionType)}"`,
 		'',
 		'    File = @{',
@@ -445,6 +476,15 @@ function profileEditorHtml(mode, name, initial, folders) {
 			<option value="off" ${initial.smokeTests === 'off' ? 'selected' : ''}>Выключены</option>
 		</select>
 	</div>
+	<div class="row">
+		<label for="segment">Сегмент (группа в панели «Базы проекта»)</label>
+		<select id="segment">
+			<option value="" ${!initial.segment ? 'selected' : ''}>Без сегмента</option>
+			<option value="test" ${initial.segment === 'test' ? 'selected' : ''}>Тестовые и обезличенные копии</option>
+			<option value="client" ${initial.segment === 'client' ? 'selected' : ''}>Клиентские</option>
+			<option value="own" ${initial.segment === 'own' ? 'selected' : ''}>Свои конфигурации</option>
+		</select>
+	</div>
 	<fieldset>
 		<legend>Авторизация (пусто — без пароля)</legend>
 		<div class="row">
@@ -525,6 +565,7 @@ function profileEditorHtml(mode, name, initial, folders) {
 				user: $('user').value,
 				password: $('password').value,
 				smokeTests: $('smokeTests').value,
+				segment: $('segment').value,
 				createFolders: $('createFolders').checked,
 				dumpNow: $('dumpNow').checked,
 				vendorConfig: $('vendorConfig').checked && !$('vendorConfig').disabled,
@@ -729,7 +770,7 @@ function addBaseProfileCommand() {
 
 	// PlatformPath и логин обычно одни и те же на все базы этой машины —
 	// подхватываем их из текущего активного профиля, чтобы не вводить заново.
-	const initial = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto' };
+	const initial = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto', segment: '' };
 	const activeConfigPath = path.join(root, '.1С', 'config.psd1');
 	if (fs.existsSync(activeConfigPath)) {
 		const active = readBaseProfileFile(activeConfigPath);
