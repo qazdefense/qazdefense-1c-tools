@@ -341,7 +341,19 @@ function readBaseProfileFile(filePath) {
 		password: psd1BlockField(text, 'Auth', 'Password'),
 		smokeTests: top('SmokeTests') || 'auto',
 		segment: top('Segment'),
+		extras: profileExtraLines(text),
 	};
+}
+
+// Верхнеуровневые скалярные поля профиля (отступ 4 пробела), которых нет в форме: WebUrl и другие. Без этого форма при сохранении их теряет.
+function profileExtraLines(text) {
+	const managed = new Set(['ConfigBase', 'Segment', 'ConnectionType', 'PlatformPath', 'SmokeTests']);
+	const lines = [];
+	for (const line of text.split(/\r?\n/)) {
+		const m = line.match(/^ {4}([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/);
+		if (m && !managed.has(m[1]) && !/^@\{/.test(m[2])) lines.push('    ' + m[1] + ' = ' + m[2]);
+	}
+	return lines;
 }
 
 function psd1Escape(value) {
@@ -375,6 +387,7 @@ function buildPsd1(v) {
 		`        User = "${e(v.user)}"`,
 		`        Password = "${e(v.password)}"`,
 		'    }',
+		...(Array.isArray(v.extras) && v.extras.length ? ['', ...v.extras] : []),
 		'}',
 		'',
 	].join('\r\n');
@@ -753,6 +766,7 @@ function editBaseProfileCommand(item) {
 	const filePath = psd1Path(root, name);
 	const initial = readBaseProfileFile(filePath);
 	openProfileEditorPanel('edit', name, initial, (_name, values) => {
+		values.extras = initial.extras;
 		fs.writeFileSync(filePath, '﻿' + buildPsd1(values), 'utf8');
 		applyFolderOptions(root, values);
 		const activeNote = item.isActiveProfile
