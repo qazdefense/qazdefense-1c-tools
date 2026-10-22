@@ -322,6 +322,29 @@ function psd1BlockField(text, blockName, fieldName) {
 	return fieldMatch ? fieldMatch[1] : '';
 }
 
+function psd1BlockNumber(text, blockName, fieldName) {
+	const blockMatch = text.match(new RegExp(`${blockName}\\s*=\\s*@\\{([\\s\\S]*?)\\}`));
+	if (!blockMatch) return '';
+	const m = blockMatch[1].match(new RegExp(`${fieldName}\\s*=\\s*"?(\\d+)"?`));
+	return m ? m[1] : '';
+}
+
+// Секция Export профиля: выгрузка cf/cfe на диск (.1С/export-artifacts.ps1). Нет секции - undefined.
+function readExportBlock(text) {
+	if (!/(?:^|[\r\n])\s*Export\s*=\s*@\{/.test(text)) return undefined;
+	const body = (text.match(/Export\s*=\s*@\{([\s\S]*?)\}/) || ['', ''])[1];
+	const itemsText = (body.match(/Items\s*=\s*@\(([^)]*)\)/) || ['', ''])[1];
+	return {
+		mode: psd1BlockField(text, 'Export', 'Mode') || 'off',
+		name: psd1BlockField(text, 'Export', 'Name'),
+		items: (itemsText.match(/"([^"]*)"/g) || []).map((s) => s.slice(1, -1)),
+		dir: psd1BlockField(text, 'Export', 'Dir'),
+		remote: psd1BlockField(text, 'Export', 'Remote'),
+		minInterval: psd1BlockNumber(text, 'Export', 'MinIntervalMinutes') || '120',
+		keepLocal: psd1BlockNumber(text, 'Export', 'KeepLocal') || '3',
+	};
+}
+
 function readBaseProfileFile(filePath) {
 	const empty = { configBase: '', connectionType: 'File', filePath: '', server: '', ref: '', platformPath: '', user: '', password: '', smokeTests: 'auto', segment: '' };
 	if (!fs.existsSync(filePath)) return empty;
@@ -342,6 +365,7 @@ function readBaseProfileFile(filePath) {
 		smokeTests: top('SmokeTests') || 'auto',
 		segment: top('Segment'),
 		extras: profileExtraLines(text),
+		exp: readExportBlock(text),
 	};
 }
 
@@ -358,6 +382,26 @@ function profileExtraLines(text) {
 
 function psd1Escape(value) {
 	return String(value || '').replace(/"/g, '""');
+}
+
+function exportLines(x) {
+	if (!x || !['off', 'manual', 'auto'].includes(x.mode)) return [];
+	if (x.mode === 'off' && !x.name && !x.dir && !x.remote && !(x.items || []).length) return [];
+	const e = psd1Escape;
+	const positive = (value, fallback) => (parseInt(value, 10) > 0 ? parseInt(value, 10) : fallback);
+	return [
+		'',
+		'    # Выгрузка cf/cfe на диск (.1С/export-artifacts.ps1): auto - после обновления БД и зеленых проверок, кнопка в 1c-tools работает всегда',
+		'    Export = @{',
+		`        Mode = "${x.mode}"`,
+		`        Name = "${e(x.name)}"`,
+		`        Items = @(${(x.items || []).map((s) => `"${e(s)}"`).join(', ')})`,
+		`        Dir = "${e(x.dir)}"`,
+		`        Remote = "${e(x.remote)}"`,
+		`        MinIntervalMinutes = ${positive(x.minInterval, 120)}`,
+		`        KeepLocal = ${positive(x.keepLocal, 3)}`,
+		'    }',
+	];
 }
 
 function buildPsd1(v) {
@@ -387,6 +431,7 @@ function buildPsd1(v) {
 		`        User = "${e(v.user)}"`,
 		`        Password = "${e(v.password)}"`,
 		'    }',
+		...exportLines(v.export || v.exp),
 		...(Array.isArray(v.extras) && v.extras.length ? ['', ...v.extras] : []),
 		'}',
 		'',
@@ -489,6 +534,28 @@ function profileEditorHtml(mode, name, initial, folders) {
 			<option value="off" ${initial.smokeTests === 'off' ? 'selected' : ''}>Выключены</option>
 		</select>
 	</div>
+	<details class="row" id="exportBox" ${initial.exp && initial.exp.mode && initial.exp.mode !== 'off' ? 'open' : ''}>
+		<summary style="cursor:pointer;font-size:12px;opacity:.8">Выгрузка cf/cfe на диск после деплоя (Google Drive через rclone)</summary>
+		<div class="hint" style="margin:6px 0 8px">Заливка идет только для включенной базы: это ваше постоянное разрешение на эти файлы и эту папку. dt не выгружается (в нем данные клиентов).</div>
+		<label for="exportMode">Когда выгружать</label>
+		<select id="exportMode">
+			<option value="off" ${!initial.exp || initial.exp.mode === 'off' ? 'selected' : ''}>Выключено (кнопка в списке баз все равно работает, если заполнены поля ниже)</option>
+			<option value="manual" ${initial.exp && initial.exp.mode === 'manual' ? 'selected' : ''}>Только по кнопке</option>
+			<option value="auto" ${initial.exp && initial.exp.mode === 'auto' ? 'selected' : ''}>Сама, после обновления БД и когда все проверки зеленые</option>
+		</select>
+		<label for="exportItems" style="margin-top:8px">Что выгружать (через запятую: cf - конфигурация, cfe:Имя - расширение)</label>
+		<input type="text" id="exportItems" value="${e(initial.exp ? initial.exp.items.join(', ') : 'cf')}" placeholder="cf, cfe:tkz">
+		<label for="exportName" style="margin-top:8px">Префикс имени файла (получится имя_2026-10-22.cf)</label>
+		<input type="text" id="exportName" value="${e(initial.exp ? initial.exp.name : '')}">
+		<label for="exportDir" style="margin-top:8px">Локальная папка</label>
+		<input type="text" id="exportDir" value="${e(initial.exp ? initial.exp.dir : '')}" placeholder="D:\\BASES\\clients\\Клиент\\Финальные cf и cfe">
+		<label for="exportRemote" style="margin-top:8px">Папка на диске (rclone)</label>
+		<input type="text" id="exportRemote" value="${e(initial.exp ? initial.exp.remote : '')}" placeholder="gdrive:1C/Клиент/Финальные cf и cfe">
+		<label for="exportMin" style="margin-top:8px">Не чаще, чем раз в N минут (для автовыгрузки)</label>
+		<input type="text" id="exportMin" value="${e(initial.exp ? initial.exp.minInterval : '120')}">
+		<label for="exportKeep" style="margin-top:8px">Сколько последних файлов держать локально</label>
+		<input type="text" id="exportKeep" value="${e(initial.exp ? initial.exp.keepLocal : '3')}">
+	</details>
 	<div class="row">
 		<label for="segment">Сегмент (группа в панели «Базы проекта»)</label>
 		<select id="segment">
@@ -579,6 +646,15 @@ function profileEditorHtml(mode, name, initial, folders) {
 				password: $('password').value,
 				smokeTests: $('smokeTests').value,
 				segment: $('segment').value,
+				export: {
+					mode: $('exportMode').value,
+					items: $('exportItems').value.split(',').map((s) => s.trim()).filter(Boolean),
+					name: $('exportName').value.trim(),
+					dir: $('exportDir').value.trim(),
+					remote: $('exportRemote').value.trim(),
+					minInterval: $('exportMin').value.trim(),
+					keepLocal: $('exportKeep').value.trim(),
+				},
 				createFolders: $('createFolders').checked,
 				dumpNow: $('dumpNow').checked,
 				vendorConfig: $('vendorConfig').checked && !$('vendorConfig').disabled,
@@ -776,6 +852,35 @@ function editBaseProfileCommand(item) {
 		if (basesTreeProvider) basesTreeProvider.refresh();
 		return undefined;
 	});
+}
+
+// Кнопка «Выгрузить cf/cfe на диск»: тот же скрипт, что запускает деплой, но без проверки интервала и зеленых тестов.
+function exportBaseCommand(item) {
+	const name = item && item.profileName;
+	const root = getWorkspaceRoot();
+	if (!name || !root) return;
+	const script = path.join(root, '.1С', 'export-artifacts.ps1');
+	if (!fs.existsSync(script)) {
+		vscode.window.showErrorMessage('Не найден .1С/export-artifacts.ps1 в этом проекте.');
+		return;
+	}
+	const profile = readBaseProfileFile(psd1Path(root, name));
+	if (!profile.exp || !profile.exp.dir || !profile.exp.items.length) {
+		vscode.window.showWarningMessage(`У базы "${name}" не заданы настройки выгрузки: «Настройки базы» → «Выгрузка cf/cfe на диск».`);
+		return;
+	}
+	vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: `Выгрузка ${name} на диск...`, cancellable: false },
+		() => new Promise((resolve) => {
+			cp.execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Base', name],
+				{ cwd: root, windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+					const tail = `${stdout || ''}\n${stderr || ''}`.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' · ');
+					if (err) vscode.window.showErrorMessage(`Выгрузка ${name} не удалась: ${tail}`);
+					else vscode.window.showInformationMessage(`Выгрузка ${name}: ${tail}`);
+					resolve();
+				});
+		})
+	);
 }
 
 function addBaseProfileCommand() {
@@ -2807,6 +2912,7 @@ function activate(context) {
 		vscode.commands.registerCommand('oneCLauncher.switchBase', switchBaseCommand),
 		vscode.commands.registerCommand('oneCLauncher.editBaseProfile', editBaseProfileCommand),
 		vscode.commands.registerCommand('oneCLauncher.addBaseProfile', addBaseProfileCommand),
+		vscode.commands.registerCommand('oneCLauncher.exportBase', exportBaseCommand),
 		// Живая жалоба: "Обновить" у "Базы Проекта" двигал только зелёную
 		// точку в списке профилей, а заголовок "Задачи — <база>" оставался
 		// старым - это два независимых вызова, и раньше кнопка дёргала

@@ -2,7 +2,7 @@
   "name": "1c-tools",
   "displayName": "1С QazDefense Tools",
   "description": "Базы 1С этой машины с запуском Предприятия/Конфигуратора без проекта, мастер настройки, профили баз и задачи деплоя, дерево метаданных как в Конфигураторе (заимствованные объекты, фильтр по подсистемам), ER-диаграммы связей, визуализация форм, просмотр макетов, предопределённые элементы и заимствование объектов в расширение — из боковой панели",
-  "version": "0.18.13",
+  "version": "0.19.0",
   "publisher": "qazdefense",
   "author": "QazDefense",
   "license": "SEE LICENSE IN LICENSE.md",
@@ -80,6 +80,11 @@
         "command": "oneCLauncher.editBaseProfile",
         "title": "1С: Настройки базы",
         "icon": "$(gear)"
+      },
+      {
+        "command": "oneCLauncher.exportBase",
+        "title": "1С: Выгрузить cf/cfe на диск",
+        "icon": "$(cloud-upload)"
       },
       {
         "command": "oneCLauncher.addBaseProfile",
@@ -232,6 +237,11 @@
         },
         {
           "command": "oneCLauncher.editBaseProfile",
+          "when": "view == oneCLauncherBases && viewItem == base-profile",
+          "group": "inline"
+        },
+        {
+          "command": "oneCLauncher.exportBase",
           "when": "view == oneCLauncherBases && viewItem == base-profile",
           "group": "inline"
         },
